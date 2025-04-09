@@ -441,8 +441,8 @@ app.get("/market-stream", async (req, res) => {
               const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0 };
               
               // Update only the fields that are provided in the streaming data
-              const newVolume = option["9"] !== undefined ? parseInt(option["8"]) : existingData.volume;
-              const newOi = option["8"] !== undefined ? parseInt(option["9"]) : existingData.oi;
+              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
+              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
 
               // Log updates for verification
               if (option["8"] !== undefined && newOi !== existingData.oi) {
