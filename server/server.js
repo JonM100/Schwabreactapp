@@ -45,7 +45,7 @@ const state = {
   },
 };
 
-// Black-Scholes Functions
+// Black-Scholes Functions (unchanged)
 const normPdf = (x) => (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
 const normCdf = (x) => {
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
@@ -437,10 +437,12 @@ app.get("/market-stream", async (req, res) => {
             optionCount += item.content.length;
             item.content.forEach(option => {
               const symbol = option.key;
+              // Preserve existing data if no new data is provided
+              const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0 };
               state.optionsData[symbol] = {
-                oi: parseInt(option["8"] || 0),
-                volume: parseInt(option["9"] || 0),
-                gamma: state.optionsData[symbol]?.gamma || 0,
+                oi: option["8"] !== undefined ? parseInt(option["9"]) : existingData.oi,
+                volume: option["9"] !== undefined ? parseInt(option["8"]) : existingData.volume,
+                gamma: existingData.gamma || 0, // Preserve gamma unless recalculated
               };
             });
           }

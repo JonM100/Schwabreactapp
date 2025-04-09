@@ -133,7 +133,6 @@ const App = () => {
       value: graphData[key][idx] || 0,
     }));
 
-    // Filter out zero values for bar data
     const positiveData = dataWithIndex
       .filter(d => d.value > 0)
       .map(d => ({ y: d.strike, x: d.value }));
@@ -141,7 +140,6 @@ const App = () => {
       .filter(d => d.value < 0)
       .map(d => ({ y: d.strike, x: d.value }));
 
-    // Top 5 peaks for annotations
     const positivePeaks = dataWithIndex
       .filter(d => d.value > 0)
       .sort((a, b) => b.value - a.value)
@@ -200,6 +198,12 @@ const App = () => {
     return [Math.min(...values, 0) * 1.1, Math.max(...values, 0) * 1.1];
   };
 
+  const getYRangeAroundSpot = () => {
+    const zoomRange = 20; // Adjust this value to control the zoom level
+    const spotPrice = graphData.spotPrice || 0;
+    return [spotPrice - zoomRange, spotPrice + zoomRange];
+  };
+
   const layout = {
     width: 600,
     height: 700,
@@ -219,7 +223,7 @@ const App = () => {
       zeroline: false,
       showgrid: false,
       type: "linear",
-      autorange: true,
+      range: getYRangeAroundSpot(), // Dynamic y-axis range for auto-zoom
       titlefont: { color: "#e0e0e0" },
       tickfont: { color: "#e0e0e0" },
     },
@@ -230,7 +234,7 @@ const App = () => {
       font: { color: "#e0e0e0" },
     },
     annotations: [],
-    hovermode: "closest", // Enable interactive tooltips
+    hovermode: "closest",
   };
 
   const spotPriceLine = (key) => ({
