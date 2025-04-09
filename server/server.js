@@ -437,12 +437,25 @@ app.get("/market-stream", async (req, res) => {
             optionCount += item.content.length;
             item.content.forEach(option => {
               const symbol = option.key;
-              // Preserve existing data if no new data is provided
+              // Get existing data or initialize with defaults if it doesn’t exist
               const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0 };
+              
+              // Update only the fields that are provided in the streaming data
+              const newVolume = option["9"] !== undefined ? parseInt(option["8"]) : existingData.volume;
+              const newOi = option["8"] !== undefined ? parseInt(option["9"]) : existingData.oi;
+
+              // Log updates for verification
+              if (option["8"] !== undefined && newOi !== existingData.oi) {
+                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
+              }
+              if (option["9"] !== undefined && newVolume !== existingData.volume) {
+                console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
+              }
+
               state.optionsData[symbol] = {
-                oi: option["8"] !== undefined ? parseInt(option["9"]) : existingData.oi,
-                volume: option["9"] !== undefined ? parseInt(option["8"]) : existingData.volume,
-                gamma: existingData.gamma || 0, // Preserve gamma unless recalculated
+                oi: newOi,
+                volume: newVolume,
+                gamma: existingData.gamma, // Preserve gamma unless recalculated
               };
             });
           }
