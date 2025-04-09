@@ -48,13 +48,10 @@ const App = () => {
     }
   };
 
-  useEffect(() => {
-    fetchInitialData();
-  }, [ticker, fromDate, toDate]);
-
   const connectSSE = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
+      console.log("[2D] Closed existing SSE connection");
     }
 
     const url = `http://localhost:5001/market-stream?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
@@ -77,6 +74,8 @@ const App = () => {
     eventSourceRef.current.onerror = (err) => {
       console.error("[2D] SSE Error:", err);
       setIsStreaming(false);
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
     };
   };
 
@@ -91,22 +90,40 @@ const App = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
+      console.log("[2D] Stream stopped manually");
     }
     setIsStreaming(false);
   };
+
+  // Handle ticker change: stop stream, fetch new data, and restart stream if active
+  const handleTickerChange = () => {
+    if (isStreaming) {
+      stopStream(); // Stop the current stream
+      fetchInitialData().then(() => {
+        startStream(); // Restart stream with new ticker
+      });
+    } else {
+      fetchInitialData();
+    }
+  };
+
+  useEffect(() => {
+    fetchInitialData();
+  }, []); // Only run on mount, not on ticker/fromDate/toDate change
 
   useEffect(() => {
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
+        console.log("[2D] Cleaned up SSE on unmount");
       }
     };
   }, []);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    fetchInitialData();
+    handleTickerChange(); // Handle ticker change with stream management
   };
 
   const calculateGexMetrics = () => {
@@ -199,7 +216,7 @@ const App = () => {
   };
 
   const getYRangeAroundSpot = () => {
-    const zoomRange = 20; // Adjust this value to control the zoom level
+    const zoomRange = 50;
     const spotPrice = graphData.spotPrice || 0;
     return [spotPrice - zoomRange, spotPrice + zoomRange];
   };
@@ -223,7 +240,7 @@ const App = () => {
       zeroline: false,
       showgrid: false,
       type: "linear",
-      range: getYRangeAroundSpot(), // Dynamic y-axis range for auto-zoom
+      range: getYRangeAroundSpot(),
       titlefont: { color: "#e0e0e0" },
       tickfont: { color: "#e0e0e0" },
     },

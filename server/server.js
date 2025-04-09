@@ -182,7 +182,7 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
       fromDate: fromDate.toISOString().split("T")[0],
       toDate: toDate.toISOString().split("T")[0],
     });
-    console.log(`optionChain  ${ticker} from ${fromDate} to ${toDate}...`);
+    console.log(`optionChain ${ticker} from ${fromDate} to ${toDate}...`);
     state.expirationDates = [...new Set([
       ...Object.keys(optionChain.callExpDateMap).map(k => k.split(":")[0]),
       ...Object.keys(optionChain.putExpDateMap).map(k => k.split(":")[0]),
@@ -339,6 +339,31 @@ app.get("/market-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
+  let currentTicker = req.query.ticker || state.ticker;
+  let currentOptionSymbols = [];
+
+  const subscribeToTicker = (ticker, optionSymbols) => {
+    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
+      keys: optionSymbols.join(","),
+      fields: "0,8,9",
+    });
+    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
+      keys: ticker,
+      fields: "0,1",
+    });
+    console.log(`[2D] Subscribed to LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
+  };
+
+  const unsubscribeFromTicker = (ticker, optionSymbols) => {
+    streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_OPTIONS", {
+      keys: optionSymbols.join(","),
+    });
+    streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_EQUITIES", {
+      keys: ticker,
+    });
+    console.log(`[2D] Unsubscribed from LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
+  };
+
   try {
     if (!isWebSocketOpen) {
       console.log("[2D] Waiting for WebSocket to open...");
@@ -351,7 +376,6 @@ app.get("/market-stream", async (req, res) => {
       });
     }
 
-    const ticker = req.query.ticker || state.ticker;
     const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
     const toDateStr = req.query.toDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const fromDate = new Date(fromDateStr);
@@ -361,9 +385,14 @@ app.get("/market-stream", async (req, res) => {
       throw new Error("Invalid date format for fromDate or toDate");
     }
 
-    const optionSymbols = await fetchInitialData(ticker, fromDate, toDate);
+    // If ticker changed, unsubscribe from the old ticker
+    if (currentTicker !== state.ticker && currentOptionSymbols.length > 0) {
+      unsubscribeFromTicker(state.ticker, currentOptionSymbols);
+    }
+
+    currentOptionSymbols = await fetchInitialData(currentTicker, fromDate, toDate);
     updateGraphData2D();
-    console.log(`[2D] Sending initial data with ${optionSymbols.length} options`);
+    console.log(`[2D] Sending initial data with ${currentOptionSymbols.length} options`);
     const allMetricsInitial = [
       ...state.graphData2D.totalGex,
       ...state.graphData2D.totalVanna,
@@ -380,15 +409,7 @@ app.get("/market-stream", async (req, res) => {
       }
     })}\n\n`);
 
-    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
-      keys: optionSymbols.join(","),
-      fields: "0,8,9",
-    });
-    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
-      keys: ticker,
-      fields: "0,1",
-    });
-    console.log(`[2D] Subscribed to LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
+    subscribeToTicker(currentTicker, currentOptionSymbols);
 
     const interval = setInterval(() => {
       res.write(`data: ${JSON.stringify({ heartbeat: "keep-alive" })}\n\n`);
@@ -403,7 +424,7 @@ app.get("/market-stream", async (req, res) => {
 
       if (data.data?.some(item => item.service === "LEVELONE_EQUITIES")) {
         data.data.forEach(item => {
-          if (item.service === "LEVELONE_EQUITIES" && item.content[0].key === ticker) {
+          if (item.service === "LEVELONE_EQUITIES" && item.content[0].key === currentTicker) {
             const newSpotPrice = parseFloat(item.content[0]["1"]);
             if (!isNaN(newSpotPrice) && newSpotPrice !== state.spotPrice) {
               console.log(`[2D] Updating spotPrice from ${state.spotPrice} to ${newSpotPrice}`);
@@ -437,25 +458,23 @@ app.get("/market-stream", async (req, res) => {
             optionCount += item.content.length;
             item.content.forEach(option => {
               const symbol = option.key;
-              // Get existing data or initialize with defaults if it doesn’t exist
               const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0 };
               
-              // Update only the fields that are provided in the streaming data
+              
               const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
               const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
 
-              // Log updates for verification
-              if (option["8"] !== undefined && newOi !== existingData.oi) {
-                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
-              }
-              if (option["9"] !== undefined && newVolume !== existingData.volume) {
+              if (option["8"] !== undefined && newVolume !== existingData.volume) {
                 console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
+              }
+              if (option["9"] !== undefined && newOi !== existingData.oi) {
+                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
               }
 
               state.optionsData[symbol] = {
                 oi: newOi,
                 volume: newVolume,
-                gamma: existingData.gamma, // Preserve gamma unless recalculated
+                gamma: existingData.gamma,
               };
             });
           }
@@ -483,6 +502,7 @@ app.get("/market-stream", async (req, res) => {
 
     req.on("close", () => {
       clearInterval(interval);
+      unsubscribeFromTicker(currentTicker, currentOptionSymbols);
       console.log("[2D] Client disconnected from SSE");
       res.end();
     });
