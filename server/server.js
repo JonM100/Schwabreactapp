@@ -45,7 +45,7 @@ const state = {
   },
 };
 
-// Black-Scholes Functions (unchanged)
+// Black-Scholes Functions
 const normPdf = (x) => (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
 const normCdf = (x) => {
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
@@ -169,8 +169,11 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
       throw new Error(`Invalid quote response for ${ticker}: ${JSON.stringify(quote)}`);
     }
     state.ticker = ticker;
-    state.spotPrice = quote[ticker].quote.lastPrice;
-    state.sigma = await calculateSigma(ticker);
+    state.spotPrice = quote[ticker].quote.lastPrice || 0;
+    if (state.spotPrice === 0) {
+      console.error(`[Initial] Spot price for ${ticker} is 0, setting default to 100`);
+      state.spotPrice = 100; // Fallback value
+    }
 
     console.log(`Fetching option chain for ${ticker} from ${fromDate} to ${toDate}...`);
     const optionChain = await marketClient.chains(ticker, {
@@ -192,22 +195,28 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
     state.optionsData = {};
     for (const exp in optionChain.callExpDateMap) {
       for (const strike in optionChain.callExpDateMap[exp]) {
-        const symbol = `${ticker.padEnd(6)}${exp.split(":")[0].replace(/-/g, "").slice(2)}C${(parseFloat(strike) * 1000).toString().padStart(8, "0")}`;
+        const option = optionChain.callExpDateMap[exp][strike][0];
+        const symbol = option.symbol; // Use the API-provided symbol directly
         optionSymbols.push(symbol);
         state.optionsData[symbol] = {
-          oi: optionChain.callExpDateMap[exp][strike][0].openInterest,
-          volume: optionChain.callExpDateMap[exp][strike][0].totalVolume,
+          oi: option.openInterest || 0,
+          volume: option.totalVolume || 0,
+          strikePrice: parseFloat(strike), // Store strike price from chain data
         };
+        //console.log(`[Initial] Call ${symbol}: OI=${state.optionsData[symbol].oi}, Volume=${state.optionsData[symbol].volume}, Strike=${state.optionsData[symbol].strikePrice}`);
       }
     }
     for (const exp in optionChain.putExpDateMap) {
       for (const strike in optionChain.putExpDateMap[exp]) {
-        const symbol = `${ticker.padEnd(6)}${exp.split(":")[0].replace(/-/g, "").slice(2)}P${(parseFloat(strike) * 1000).toString().padStart(8, "0")}`;
+        const option = optionChain.putExpDateMap[exp][strike][0];
+        const symbol = option.symbol; // Use the API-provided symbol directly
         optionSymbols.push(symbol);
         state.optionsData[symbol] = {
-          oi: optionChain.putExpDateMap[exp][strike][0].openInterest,
-          volume: optionChain.putExpDateMap[exp][strike][0].totalVolume,
+          oi: option.openInterest || 0,
+          volume: option.totalVolume || 0,
+          strikePrice: parseFloat(strike), // Store strike price from chain data
         };
+       // console.log(`[Initial] Put ${symbol}: OI=${state.optionsData[symbol].oi}, Volume=${state.optionsData[symbol].volume}, Strike=${state.optionsData[symbol].strikePrice}`);
       }
     }
     console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker}`);
@@ -221,8 +230,12 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
 const updateGraphData2D = () => {
   const strikes = new Set();
   for (const symbol in state.optionsData) {
-    const strikePart = symbol.includes("C") ? symbol.split("C")[1] : symbol.split("P")[1];
-    strikes.add(parseFloat(strikePart) / 1000);
+    const strike = state.optionsData[symbol].strikePrice;
+    if (isNaN(strike)) {
+      console.error(`[2D] Invalid strike for ${symbol}: ${strike}`);
+      continue;
+    }
+    strikes.add(strike);
   }
   state.graphData2D.strikes = Array.from(strikes).sort((a, b) => a - b);
   const len = state.graphData2D.strikes.length;
@@ -234,25 +247,47 @@ const updateGraphData2D = () => {
 
   const expDates = Object.fromEntries(state.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
   for (const symbol in state.optionsData) {
-    const isCall = symbol.includes("C");
-    if (!isCall && !symbol.includes("P")) continue;
-    const strike = parseFloat((symbol.includes("C") ? symbol.split("C")[1] : symbol.split("P")[1]) / 1000);
+    const cleanSymbol = symbol.trim();
+    const isCall = cleanSymbol.includes("C");
+    if (!isCall && !cleanSymbol.includes("P")) continue;
+
+    const strike = state.optionsData[symbol].strikePrice;
+    if (isNaN(strike)) {
+      console.error(`[2D] Invalid strike for ${cleanSymbol}: ${strike}`);
+      continue;
+    }
     const idx = state.graphData2D.strikes.indexOf(strike);
-    const oi = state.optionsData[symbol].oi ;
-    const volume = state.optionsData[symbol].volume ;
-    const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === symbol.slice(6, 12));
+    if (idx === -1) {
+      console.error(`[2D] Strike ${strike} not found in strikes array for ${cleanSymbol}`);
+      continue;
+    }
+
+    const oi = state.optionsData[symbol].oi || 0;
+    const volume = state.optionsData[symbol].volume || 0;
+    const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
+  //  if (!expDate) {
+    //  console.warn(`[2D] No matching expiration for ${cleanSymbol}, using default T=30/365`);
+    //}
     const t = expDates[expDate] || 30 / 365;
+
+    //console.log(`[2D] Calculating for ${cleanSymbol}: S=${state.spotPrice}, K=${strike}, T=${t}, r=0.01, sigma=${state.sigma}`);
 
     const gamma = blackScholesGamma(state.spotPrice, strike, t, 0.01, state.sigma);
     const vanna = blackScholesVanna(state.spotPrice, strike, t, 0.01, state.sigma);
     const charm = blackScholesCharm(state.spotPrice, strike, t, 0.01, state.sigma, isCall ? "call" : "put");
     const multiplier = isCall ? 1 : -1;
 
+    console.log(`[2D] ${cleanSymbol}: idx=${idx}, oi=${oi}, volume=${volume}, gamma=${gamma}, vanna=${vanna}, charm=${charm}, multiplier=${multiplier}`);
+
     state.graphData2D.totalGex[idx] += multiplier * gamma * oi * 100;
     state.graphData2D.totalVanna[idx] += multiplier * vanna * oi * 100;
     state.graphData2D.totalCharm[idx] += multiplier * charm * oi * 100;
     state.graphData2D.totalOi[idx] += oi * multiplier;
     state.graphData2D.totalVolume[idx] += volume * multiplier;
+
+    if (cleanSymbol.includes("P")) {
+      console.log(`[2D] Put ${cleanSymbol}: GEX=${state.graphData2D.totalGex[idx]}, Vanna=${state.graphData2D.totalVanna[idx]}, OI=${state.graphData2D.totalOi[idx]}, Volume=${state.graphData2D.totalVolume[idx]}`);
+    }
 
     state.optionsData[symbol].gamma = gamma;
   }
@@ -385,7 +420,6 @@ app.get("/market-stream", async (req, res) => {
       throw new Error("Invalid date format for fromDate or toDate");
     }
 
-    // If ticker changed, unsubscribe from the old ticker
     if (currentTicker !== state.ticker && currentOptionSymbols.length > 0) {
       unsubscribeFromTicker(state.ticker, currentOptionSymbols);
     }
@@ -457,24 +491,23 @@ app.get("/market-stream", async (req, res) => {
           if (item.service === "LEVELONE_OPTIONS") {
             optionCount += item.content.length;
             item.content.forEach(option => {
-              const symbol = option.key;
-              const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0 };
-              
-              
-              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
-              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
+              const symbol = option.key.trim();
+              const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
 
-              //if (option["8"] !== undefined && newVolume !== existingData.volume) {
-             //   console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
-             // }
-              //if (option["9"] !== undefined && newOi !== existingData.oi) {
-              //  console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
-             // }
+              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume; // TOTAL_VOLUME
+              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;       // OPEN_INTEREST
+
+              if (option["8"] !== undefined && newVolume !== existingData.volume) {
+                console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
+              }
+              if (option["9"] !== undefined && newOi !== existingData.oi) {
+                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
+              }
 
               state.optionsData[symbol] = {
+                ...existingData, // Preserve strikePrice and gamma
                 oi: newOi,
                 volume: newVolume,
-                gamma: existingData.gamma,
               };
             });
           }
