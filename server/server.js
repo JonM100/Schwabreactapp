@@ -238,8 +238,8 @@ const updateGraphData2D = () => {
     if (!isCall && !symbol.includes("P")) continue;
     const strike = parseFloat((symbol.includes("C") ? symbol.split("C")[1] : symbol.split("P")[1]) / 1000);
     const idx = state.graphData2D.strikes.indexOf(strike);
-    const oi = state.optionsData[symbol].oi || 0;
-    const volume = state.optionsData[symbol].volume || 0;
+    const oi = state.optionsData[symbol].oi ;
+    const volume = state.optionsData[symbol].volume ;
     const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === symbol.slice(6, 12));
     const t = expDates[expDate] || 30 / 365;
 
@@ -464,12 +464,12 @@ app.get("/market-stream", async (req, res) => {
               const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
               const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
 
-              if (option["8"] !== undefined && newVolume !== existingData.volume) {
-                console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
-              }
-              if (option["9"] !== undefined && newOi !== existingData.oi) {
-                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
-              }
+              //if (option["8"] !== undefined && newVolume !== existingData.volume) {
+             //   console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
+             // }
+              //if (option["9"] !== undefined && newOi !== existingData.oi) {
+              //  console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
+             // }
 
               state.optionsData[symbol] = {
                 oi: newOi,

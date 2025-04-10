@@ -216,7 +216,7 @@ const App = () => {
   };
 
   const getYRangeAroundSpot = () => {
-    const zoomRange = 50;
+    const zoomRange = 20;
     const spotPrice = graphData.spotPrice || 0;
     return [spotPrice - zoomRange, spotPrice + zoomRange];
   };
