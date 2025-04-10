@@ -1,16 +1,20 @@
-
-
 code {
   font-family: Consolas, Monaco, "Courier New", monospace;
 }
 
+body{
+margin: 0px;
+
+}
 .app-container {
   padding: 20px;
-  min-height: 100vh;
+
   display: flex;
   flex-direction: column;
   align-items: center;
   background-color: #000000;
+  position: relative; /* Ensure pie charts position relative to this */
+
 }
 
 .app-title {
@@ -183,4 +187,23 @@ button:disabled {
 
 .chart-info p {
   margin: 5px 0;
+}
+
+/* Updated PCR Pie Chart Styles */
+.pcr-pie-container {
+  position: fixed; /* Changed to fixed to stay visible on scroll */
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column; /* Stack vertically */
+  gap: 20px;
+  z-index: 1000; /* Ensure it stays above other content */
+}
+
+.pcr-pie {
+  background-color: #000000;
+  padding: 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 15px rgba(0, 247, 255, 0.1);
 }

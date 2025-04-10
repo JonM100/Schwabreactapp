@@ -20,6 +20,7 @@ const App = () => {
       totalVolume: [],
     },
     vannaXRange: [0, 0],
+    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 }, // Changed to totals
   });
   const [ticker, setTicker] = useState("SPY");
   const [fromDate, setFromDate] = useState(new Date().toISOString().split("T")[0]);
@@ -33,7 +34,7 @@ const App = () => {
   const fetchInitialData = async () => {
     try {
       const response = await fetch(
-        `http://localhost:5001/market-data?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`
+        `http://localhost:5002/market-data?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`
       );
       const data = await response.json();
       console.log("[2D] Initial Data Response:", data);
@@ -54,7 +55,7 @@ const App = () => {
       console.log("[2D] Closed existing SSE connection");
     }
 
-    const url = `http://localhost:5001/market-stream?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
+    const url = `http://localhost:5002/market-stream?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
     eventSourceRef.current = new EventSource(url);
 
     eventSourceRef.current.onmessage = (event) => {
@@ -95,13 +96,10 @@ const App = () => {
     setIsStreaming(false);
   };
 
-  // Handle ticker change: stop stream, fetch new data, and restart stream if active
   const handleTickerChange = () => {
     if (isStreaming) {
-      stopStream(); // Stop the current stream
-      fetchInitialData().then(() => {
-        startStream(); // Restart stream with new ticker
-      });
+      stopStream();
+      fetchInitialData().then(() => startStream());
     } else {
       fetchInitialData();
     }
@@ -109,7 +107,7 @@ const App = () => {
 
   useEffect(() => {
     fetchInitialData();
-  }, []); // Only run on mount, not on ticker/fromDate/toDate change
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -123,7 +121,7 @@ const App = () => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    handleTickerChange(); // Handle ticker change with stream management
+    handleTickerChange();
   };
 
   const calculateGexMetrics = () => {
@@ -274,9 +272,49 @@ const App = () => {
       }
     : null;
 
+  // PCR Pie Chart Data using totals
+  const createPieData = (type) => {
+    const { callOi, putOi, callVolume, putVolume } = graphData.putCallTotals;
+    const isOi = type === "oi";
+    const calls = isOi ? callOi : callVolume;
+    const puts = isOi ? putOi : putVolume;
+    const total = calls + puts || 1; // Avoid division by zero
+    const ratio = calls === 0 ? 0 : puts / calls;
+    return {
+      values: [puts, calls],
+      labels: ["Puts", "Calls"],
+      type: "pie",
+      marker: {
+        colors: ["#ff003c", "#00ff99"], // Red for puts, green for calls
+      },
+      textinfo: "label+percent",
+      textposition: "inside",
+      hoverinfo: "label+percent",
+      title: { text: `${isOi ? "OI" : "Vol"} PCR: ${ratio.toFixed(2)}`, font: { color: "#00f7ff", size: 14 } },
+    };
+  };
+
+  const pieLayout = {
+    width: 250, // Reduced width for sidebar
+    height: 250,
+    plot_bgcolor: "rgba(0, 0, 0, 0)",
+    paper_bgcolor: "rgba(0, 0, 0, 0)",
+    font: { family: "Arial, sans-serif", size: 12, color: "#e0e0e0" },
+    showlegend: false,
+    margin: { t: 40, b: 40, l: 40, r: 40 },
+  };
+
   return (
     <div className="app-container">
       <Navbar />
+      <div className="pcr-pie-container">
+        <div className="pcr-pie">
+          <Plot data={[createPieData("oi")]} layout={pieLayout} />
+        </div>
+        <div className="pcr-pie">
+          <Plot data={[createPieData("volume")]} layout={pieLayout} />
+        </div>
+      </div>
       <h1 className="app-title">Options Exposure Dashboard (2D)</h1>
       <div className="stream-controls">
         <button onClick={startStream} disabled={isStreaming}>

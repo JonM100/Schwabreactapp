@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const app = express();
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 
 app.use(cors());
 
@@ -37,6 +37,7 @@ const state = {
       totalOi: [],
       totalVolume: [],
     },
+    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 }, // Changed to totals
   },
   graphData3D: {
     strikes: [],
@@ -45,7 +46,7 @@ const state = {
   },
 };
 
-// Black-Scholes Functions
+// Black-Scholes Functions (unchanged)
 const normPdf = (x) => (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
 const normCdf = (x) => {
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
@@ -196,27 +197,25 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
     for (const exp in optionChain.callExpDateMap) {
       for (const strike in optionChain.callExpDateMap[exp]) {
         const option = optionChain.callExpDateMap[exp][strike][0];
-        const symbol = option.symbol; // Use the API-provided symbol directly
+        const symbol = option.symbol;
         optionSymbols.push(symbol);
         state.optionsData[symbol] = {
           oi: option.openInterest || 0,
           volume: option.totalVolume || 0,
-          strikePrice: parseFloat(strike), // Store strike price from chain data
+          strikePrice: parseFloat(strike),
         };
-        //console.log(`[Initial] Call ${symbol}: OI=${state.optionsData[symbol].oi}, Volume=${state.optionsData[symbol].volume}, Strike=${state.optionsData[symbol].strikePrice}`);
       }
     }
     for (const exp in optionChain.putExpDateMap) {
       for (const strike in optionChain.putExpDateMap[exp]) {
         const option = optionChain.putExpDateMap[exp][strike][0];
-        const symbol = option.symbol; // Use the API-provided symbol directly
+        const symbol = option.symbol;
         optionSymbols.push(symbol);
         state.optionsData[symbol] = {
           oi: option.openInterest || 0,
           volume: option.totalVolume || 0,
-          strikePrice: parseFloat(strike), // Store strike price from chain data
+          strikePrice: parseFloat(strike),
         };
-       // console.log(`[Initial] Put ${symbol}: OI=${state.optionsData[symbol].oi}, Volume=${state.optionsData[symbol].volume}, Strike=${state.optionsData[symbol].strikePrice}`);
       }
     }
     console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker}`);
@@ -245,11 +244,14 @@ const updateGraphData2D = () => {
   state.graphData2D.totalOi = Array(len).fill(0);
   state.graphData2D.totalVolume = Array(len).fill(0);
 
+  let totalCallOi = 0, totalPutOi = 0, totalCallVolume = 0, totalPutVolume = 0;
+
   const expDates = Object.fromEntries(state.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
   for (const symbol in state.optionsData) {
     const cleanSymbol = symbol.trim();
     const isCall = cleanSymbol.includes("C");
-    if (!isCall && !cleanSymbol.includes("P")) continue;
+    const isPut = cleanSymbol.includes("P");
+    if (!isCall && !isPut) continue;
 
     const strike = state.optionsData[symbol].strikePrice;
     if (isNaN(strike)) {
@@ -265,19 +267,12 @@ const updateGraphData2D = () => {
     const oi = state.optionsData[symbol].oi || 0;
     const volume = state.optionsData[symbol].volume || 0;
     const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
-  //  if (!expDate) {
-    //  console.warn(`[2D] No matching expiration for ${cleanSymbol}, using default T=30/365`);
-    //}
     const t = expDates[expDate] || 30 / 365;
-
-    //console.log(`[2D] Calculating for ${cleanSymbol}: S=${state.spotPrice}, K=${strike}, T=${t}, r=0.01, sigma=${state.sigma}`);
 
     const gamma = blackScholesGamma(state.spotPrice, strike, t, 0.01, state.sigma);
     const vanna = blackScholesVanna(state.spotPrice, strike, t, 0.01, state.sigma);
     const charm = blackScholesCharm(state.spotPrice, strike, t, 0.01, state.sigma, isCall ? "call" : "put");
     const multiplier = isCall ? 1 : -1;
-
-    console.log(`[2D] ${cleanSymbol}: idx=${idx}, oi=${oi}, volume=${volume}, gamma=${gamma}, vanna=${vanna}, charm=${charm}, multiplier=${multiplier}`);
 
     state.graphData2D.totalGex[idx] += multiplier * gamma * oi * 100;
     state.graphData2D.totalVanna[idx] += multiplier * vanna * oi * 100;
@@ -285,12 +280,26 @@ const updateGraphData2D = () => {
     state.graphData2D.totalOi[idx] += oi * multiplier;
     state.graphData2D.totalVolume[idx] += volume * multiplier;
 
-    if (cleanSymbol.includes("P")) {
-      console.log(`[2D] Put ${cleanSymbol}: GEX=${state.graphData2D.totalGex[idx]}, Vanna=${state.graphData2D.totalVanna[idx]}, OI=${state.graphData2D.totalOi[idx]}, Volume=${state.graphData2D.totalVolume[idx]}`);
+    // Accumulate totals
+    if (isCall) {
+      totalCallOi += oi;
+      totalCallVolume += volume;
+    } else if (isPut) {
+      totalPutOi += oi;
+      totalPutVolume += volume;
     }
 
     state.optionsData[symbol].gamma = gamma;
   }
+
+  // Store totals instead of ratios
+  state.graphData2D.putCallTotals = {
+    callOi: totalCallOi,
+    putOi: totalPutOi,
+    callVolume: totalCallVolume,
+    putVolume: totalPutVolume,
+  };
+  console.log(`[2D] Totals - Call OI: ${totalCallOi}, Put OI: ${totalPutOi}, Call Vol: ${totalCallVolume}, Put Vol: ${totalPutVolume}`);
 
   const metrics = ["totalGex", "totalVanna", "totalCharm", "totalOi", "totalVolume"];
   metrics.forEach(metric => {
@@ -505,7 +514,7 @@ app.get("/market-stream", async (req, res) => {
               }
 
               state.optionsData[symbol] = {
-                ...existingData, // Preserve strikePrice and gamma
+                ...existingData,
                 oi: newOi,
                 volume: newVolume,
               };
