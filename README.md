@@ -45,6 +45,9 @@ SCHWAB_CALLBACK_URL=https://127.0.0.1:5556
 SCHWAB_APP_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SCHWAB_SECRET=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
 ```
+USE THIS TO AUTH
+https://github.com/JonM100/schwab-client-js/edit/main/docs/SchwabConfig.md#schwab-authorizejs-and-manual-authorizejs
+
 
 If you don't specify a `SCHWAB_CALLBACK_URL`, I will assume a default value of `https://127.0.0.1:5556`
 
