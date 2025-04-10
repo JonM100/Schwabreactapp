@@ -20,7 +20,7 @@ const App = () => {
       totalVolume: [],
     },
     vannaXRange: [0, 0],
-    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 }, // Changed to totals
+    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 },
   });
   const [ticker, setTicker] = useState("SPY");
   const [fromDate, setFromDate] = useState(new Date().toISOString().split("T")[0]);
@@ -58,6 +58,10 @@ const App = () => {
     const url = `http://localhost:5002/market-stream?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
     eventSourceRef.current = new EventSource(url);
 
+    eventSourceRef.current.onopen = () => {
+      console.log("[2D] SSE connection opened successfully");
+    };
+
     eventSourceRef.current.onmessage = (event) => {
       const message = JSON.parse(event.data);
       console.log("[2D] SSE Message:", message);
@@ -82,8 +86,11 @@ const App = () => {
 
   const startStream = () => {
     if (!isStreaming) {
+      console.log("[2D] Starting stream...");
       setIsStreaming(true);
       connectSSE();
+    } else {
+      console.log("[2D] Stream already active");
     }
   };
 
@@ -272,20 +279,19 @@ const App = () => {
       }
     : null;
 
-  // PCR Pie Chart Data using totals
   const createPieData = (type) => {
     const { callOi, putOi, callVolume, putVolume } = graphData.putCallTotals;
     const isOi = type === "oi";
     const calls = isOi ? callOi : callVolume;
     const puts = isOi ? putOi : putVolume;
-    const total = calls + puts || 1; // Avoid division by zero
+    const total = calls + puts || 1;
     const ratio = calls === 0 ? 0 : puts / calls;
     return {
       values: [puts, calls],
       labels: ["Puts", "Calls"],
       type: "pie",
       marker: {
-        colors: ["#ff003c", "#00ff99"], // Red for puts, green for calls
+        colors: ["#ff003c", "#00ff99"],
       },
       textinfo: "label+percent",
       textposition: "inside",
@@ -295,7 +301,7 @@ const App = () => {
   };
 
   const pieLayout = {
-    width: 250, // Reduced width for sidebar
+    width: 250,
     height: 250,
     plot_bgcolor: "rgba(0, 0, 0, 0)",
     paper_bgcolor: "rgba(0, 0, 0, 0)",

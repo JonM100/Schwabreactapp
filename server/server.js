@@ -37,7 +37,7 @@ const state = {
       totalOi: [],
       totalVolume: [],
     },
-    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 }, // Changed to totals
+    putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 },
   },
   graphData3D: {
     strikes: [],
@@ -280,7 +280,6 @@ const updateGraphData2D = () => {
     state.graphData2D.totalOi[idx] += oi * multiplier;
     state.graphData2D.totalVolume[idx] += volume * multiplier;
 
-    // Accumulate totals
     if (isCall) {
       totalCallOi += oi;
       totalCallVolume += volume;
@@ -292,7 +291,6 @@ const updateGraphData2D = () => {
     state.optionsData[symbol].gamma = gamma;
   }
 
-  // Store totals instead of ratios
   state.graphData2D.putCallTotals = {
     callOi: totalCallOi,
     putOi: totalPutOi,
@@ -378,7 +376,6 @@ app.get("/market-data", async (req, res) => {
 
 app.get("/market-stream", async (req, res) => {
   console.log("[2D] Client connected to SSE");
-
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -387,15 +384,19 @@ app.get("/market-stream", async (req, res) => {
   let currentOptionSymbols = [];
 
   const subscribeToTicker = (ticker, optionSymbols) => {
-    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
-      keys: optionSymbols.join(","),
-      fields: "0,8,9",
-    });
-    streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
-      keys: ticker,
-      fields: "0,1",
-    });
-    console.log(`[2D] Subscribed to LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
+    try {
+      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
+        keys: optionSymbols.join(","),
+        fields: "0,8,9",
+      });
+      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
+        keys: ticker,
+        fields: "0,1",
+      });
+      console.log(`[2D] Subscribed to LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
+    } catch (e) {
+      console.error("[2D] Subscription error:", e);
+    }
   };
 
   const unsubscribeFromTicker = (ticker, optionSymbols) => {
@@ -410,14 +411,8 @@ app.get("/market-stream", async (req, res) => {
 
   try {
     if (!isWebSocketOpen) {
-      console.log("[2D] Waiting for WebSocket to open...");
-      await new Promise(resolve => {
-        streamingClient.streamListen("open", () => {
-          isWebSocketOpen = true;
-          console.log("[2D] WebSocket opened during request");
-          resolve();
-        });
-      });
+      console.log("[2D] WebSocket not open, reinitializing...");
+      await initializeClients();
     }
 
     const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
@@ -459,6 +454,7 @@ app.get("/market-stream", async (req, res) => {
     }, 10000);
 
     streamingClient.streamListen("message", async (message) => {
+      console.log("[2D] WebSocket message received:", message);
       if (!message.includes('"data"')) {
         console.log("[2D] Skipping non-data message:", message);
         return;
@@ -503,8 +499,8 @@ app.get("/market-stream", async (req, res) => {
               const symbol = option.key.trim();
               const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
 
-              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume; // TOTAL_VOLUME
-              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;       // OPEN_INTEREST
+              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
+              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
 
               if (option["8"] !== undefined && newVolume !== existingData.volume) {
                 console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
