@@ -17,6 +17,12 @@ let marketClient = null;
 let streamingClient = null;
 let isWebSocketOpen = false;
 
+// Global subscription tracking
+const activeSubscriptions = {
+  ticker: null,
+  optionSymbols: new Set(),
+};
+
 const state = {
   ticker: process.env.TICKER || "SPY",
   expirationDates: [],
@@ -38,6 +44,9 @@ const state = {
       totalVolume: [],
     },
     putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 },
+    optionsData: {}, // Add optionsData to response
+    expirationDates: [], // Add expirationDates to response
+    expDatesWithTime: {}, // Add time-to-expiration for each expiration date
   },
   graphData3D: {
     strikes: [],
@@ -46,7 +55,7 @@ const state = {
   },
 };
 
-// Black-Scholes Functions (unchanged)
+// Black-Scholes Functions
 const normPdf = (x) => (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
 const normCdf = (x) => {
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
@@ -113,10 +122,12 @@ const calculateSigma = async (ticker) => {
     const closes = priceHistory.candles.map(c => c.close);
     const returns = closes.slice(1).map((c, i) => (c - closes[i]) / closes[i]);
     const sigma = Math.sqrt(252) * Math.sqrt(returns.reduce((sum, r) => sum + r * r, 0) / (returns.length - 1));
-    return isNaN(sigma) ? 0.2 : sigma;
+    state.sigma = isNaN(sigma) ? 0.2 : sigma; // Update state.sigma
+    return state.sigma;
   } catch (e) {
     console.error("Error calculating sigma:", e);
-    return 0.2;
+    state.sigma = 0.2;
+    return state.sigma;
   }
 };
 
@@ -143,6 +154,8 @@ async function initializeClients() {
     streamingClient.streamListen("close", (code, reason) => {
       console.log(`WebSocket closed: Code=${code}, Reason=${reason}`);
       isWebSocketOpen = false;
+      activeSubscriptions.ticker = null;
+      activeSubscriptions.optionSymbols.clear();
       reject(new Error(`WebSocket closed: ${reason}`));
     });
     streamingClient.streamListen("error", (error) => {
@@ -173,8 +186,11 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
     state.spotPrice = quote[ticker].quote.lastPrice || 0;
     if (state.spotPrice === 0) {
       console.error(`[Initial] Spot price for ${ticker} is 0, setting default to 100`);
-      state.spotPrice = 100; // Fallback value
+      state.spotPrice = 100;
     }
+
+    // Calculate sigma
+    await calculateSigma(ticker);
 
     console.log(`Fetching option chain for ${ticker} from ${fromDate} to ${toDate}...`);
     const optionChain = await marketClient.chains(ticker, {
@@ -203,6 +219,8 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
           oi: option.openInterest || 0,
           volume: option.totalVolume || 0,
           strikePrice: parseFloat(strike),
+          expirationDate: exp.split(":")[0], // Add expiration date
+          optionType: "call", // Add option type
         };
       }
     }
@@ -215,6 +233,8 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
           oi: option.openInterest || 0,
           volume: option.totalVolume || 0,
           strikePrice: parseFloat(strike),
+          expirationDate: exp.split(":")[0], // Add expiration date
+          optionType: "put", // Add option type
         };
       }
     }
@@ -243,10 +263,22 @@ const updateGraphData2D = () => {
   state.graphData2D.totalCharm = Array(len).fill(0);
   state.graphData2D.totalOi = Array(len).fill(0);
   state.graphData2D.totalVolume = Array(len).fill(0);
+  state.graphData2D.optionsData = { ...state.optionsData }; // Include optionsData in response
+  state.graphData2D.expirationDates = state.expirationDates; // Include expiration dates
+
+  // Calculate time to expiration for each expiration date
+  const expDates = Object.fromEntries(
+    state.expirationDates.map(exp => {
+      const expDate = new Date(exp);
+      const currentDate = new Date();
+      const daysToExpiration = (expDate - currentDate) / (1000 * 60 * 60 * 24);
+      return [exp, Math.max(daysToExpiration / 365, 1e-6)];
+    })
+  );
+  state.graphData2D.expDatesWithTime = expDates; // Include time-to-expiration
 
   let totalCallOi = 0, totalPutOi = 0, totalCallVolume = 0, totalPutVolume = 0;
 
-  const expDates = Object.fromEntries(state.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
   for (const symbol in state.optionsData) {
     const cleanSymbol = symbol.trim();
     const isCall = cleanSymbol.includes("C");
@@ -266,7 +298,7 @@ const updateGraphData2D = () => {
 
     const oi = state.optionsData[symbol].oi || 0;
     const volume = state.optionsData[symbol].volume || 0;
-    const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
+    const expDate = state.optionsData[symbol].expirationDate;
     const t = expDates[expDate] || 30 / 365;
 
     const gamma = blackScholesGamma(state.spotPrice, strike, t, 0.01, state.sigma);
@@ -274,7 +306,7 @@ const updateGraphData2D = () => {
     const charm = blackScholesCharm(state.spotPrice, strike, t, 0.01, state.sigma, isCall ? "call" : "put");
     const multiplier = isCall ? 1 : -1;
 
-    state.graphData2D.totalGex[idx] += multiplier * gamma * oi * 100;
+    state.graphData2D.totalGex[idx] += multiplier * gamma * oi * 100 * state.spotPrice * state.spotPrice * 0.01;
     state.graphData2D.totalVanna[idx] += multiplier * vanna * oi * 100;
     state.graphData2D.totalCharm[idx] += multiplier * charm * oi * 100;
     state.graphData2D.totalOi[idx] += oi * multiplier;
@@ -324,13 +356,99 @@ const updateGraphData3D = () => {
   console.log(`[3D] Graph data updated with ${state.graphData3D.strikes.length} strikes, ${state.graphData3D.expirationDates.length} expirations`);
 };
 
-async function waitForWebSocket() {
-  if (isWebSocketOpen) return;
+const subscribeToTicker = async (ticker, optionSymbols) => {
+  try {
+    if (activeSubscriptions.ticker !== ticker || ![...activeSubscriptions.optionSymbols].every(s => optionSymbols.includes(s))) {
+      if (activeSubscriptions.ticker) {
+        streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_EQUITIES", { keys: activeSubscriptions.ticker });
+        console.log(`[2D] Unsubscribed from LEVELONE_EQUITIES for ${activeSubscriptions.ticker}`);
+      }
+      if (activeSubscriptions.optionSymbols.size > 0) {
+        streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_OPTIONS", {
+          keys: [...activeSubscriptions.optionSymbols].join(","),
+        });
+        console.log(`[2D] Unsubscribed from LEVELONE_OPTIONS for ${activeSubscriptions.optionSymbols.size} symbols`);
+      }
+
+      activeSubscriptions.ticker = ticker;
+      activeSubscriptions.optionSymbols = new Set(optionSymbols);
+
+      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
+        keys: optionSymbols.join(","),
+        fields: "0,8,9",
+      });
+      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
+        keys: ticker,
+        fields: "0,1",
+      });
+      console.log(`[2D] Subscribed to LEVELONE_OPTIONS (${optionSymbols.length} symbols) and LEVELONE_EQUITIES for ${ticker}`);
+    } else {
+      console.log(`[2D] Already subscribed to ${ticker} and ${optionSymbols.length} option symbols`);
+    }
+  } catch (e) {
+    console.error("[2D] Subscription error:", e);
+  }
+};
+
+async function initializeStreaming() {
   await initializeClients();
+
+  streamingClient.streamListen("message", async (message) => {
+    console.log("[2D] WebSocket message received:", message);
+    if (!message.includes('"data"')) {
+      console.log("[2D] Skipping non-data message:", message);
+      return;
+    }
+    const data = JSON.parse(message);
+
+    if (data.data?.some(item => item.service === "LEVELONE_EQUITIES")) {
+      data.data.forEach(item => {
+        if (item.service === "LEVELONE_EQUITIES" && item.content[0].key === activeSubscriptions.ticker) {
+          const newSpotPrice = parseFloat(item.content[0]["1"]);
+          if (!isNaN(newSpotPrice) && newSpotPrice !== state.spotPrice) {
+            console.log(`[2D] Updating spotPrice from ${state.spotPrice} to ${newSpotPrice}`);
+            state.spotPrice = newSpotPrice;
+            updateGraphData2D();
+          }
+        }
+      });
+    }
+
+    if (data.data?.some(item => item.service === "LEVELONE_OPTIONS")) {
+      let optionCount = 0;
+      data.data.forEach(item => {
+        if (item.service === "LEVELONE_OPTIONS") {
+          optionCount += item.content.length;
+          item.content.forEach(option => {
+            const symbol = option.key.trim();
+            const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
+
+            const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
+            const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
+
+            if (option["8"] !== undefined && newVolume !== existingData.volume) {
+              console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
+            }
+            if (option["9"] !== undefined && newOi !== existingData.oi) {
+              console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
+            }
+
+            state.optionsData[symbol] = {
+              ...existingData,
+              oi: newOi,
+              volume: newVolume,
+            };
+          });
+        }
+      });
+      console.log(`[2D] Received ${optionCount} options from streaming`);
+      updateGraphData2D();
+    }
+  });
 }
 
-waitForWebSocket().catch(err => {
-  console.error("Failed to initialize clients:", err);
+initializeStreaming().catch(err => {
+  console.error("Failed to initialize streaming:", err);
   process.exit(1);
 });
 
@@ -367,6 +485,7 @@ app.get("/market-data", async (req, res) => {
       ...state.graphData2D,
       spotPrice: state.spotPrice,
       vannaXRange,
+      sigma: state.sigma, // Include sigma in response
     });
   } catch (e) {
     console.error("[2D] Error in /market-data:", e);
@@ -380,57 +499,27 @@ app.get("/market-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  let currentTicker = req.query.ticker || state.ticker;
-  let currentOptionSymbols = [];
-
-  const subscribeToTicker = (ticker, optionSymbols) => {
-    try {
-      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_OPTIONS", {
-        keys: optionSymbols.join(","),
-        fields: "0,8,9",
-      });
-      streamingClient.streamSchwabRequest("SUBS", "LEVELONE_EQUITIES", {
-        keys: ticker,
-        fields: "0,1",
-      });
-      console.log(`[2D] Subscribed to LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
-    } catch (e) {
-      console.error("[2D] Subscription error:", e);
-    }
-  };
-
-  const unsubscribeFromTicker = (ticker, optionSymbols) => {
-    streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_OPTIONS", {
-      keys: optionSymbols.join(","),
-    });
-    streamingClient.streamSchwabRequest("UNSUBS", "LEVELONE_EQUITIES", {
-      keys: ticker,
-    });
-    console.log(`[2D] Unsubscribed from LEVELONE_OPTIONS and LEVELONE_EQUITIES for ${ticker}`);
-  };
+  const ticker = req.query.ticker || state.ticker;
+  const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
+  const toDateStr = req.query.toDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  const fromDate = new Date(fromDateStr);
+  const toDate = new Date(toDateStr);
 
   try {
-    if (!isWebSocketOpen) {
-      console.log("[2D] WebSocket not open, reinitializing...");
-      await initializeClients();
-    }
-
-    const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
-    const toDateStr = req.query.toDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const fromDate = new Date(fromDateStr);
-    const toDate = new Date(toDateStr);
-
     if (isNaN(fromDate) || isNaN(toDate)) {
       throw new Error("Invalid date format for fromDate or toDate");
     }
 
-    if (currentTicker !== state.ticker && currentOptionSymbols.length > 0) {
-      unsubscribeFromTicker(state.ticker, currentOptionSymbols);
+    if (!isWebSocketOpen) {
+      console.log("[2D] WebSocket not open, reinitializing...");
+      await initializeStreaming();
     }
 
-    currentOptionSymbols = await fetchInitialData(currentTicker, fromDate, toDate);
+    const optionSymbols = await fetchInitialData(ticker, fromDate, toDate);
     updateGraphData2D();
-    console.log(`[2D] Sending initial data with ${currentOptionSymbols.length} options`);
+    await subscribeToTicker(ticker, optionSymbols);
+
+    console.log(`[2D] Sending initial data with ${optionSymbols.length} options`);
     const allMetricsInitial = [
       ...state.graphData2D.totalGex,
       ...state.graphData2D.totalVanna,
@@ -444,103 +533,43 @@ app.get("/market-stream", async (req, res) => {
         ...state.graphData2D,
         spotPrice: state.spotPrice,
         vannaXRange: vannaXRangeInitial,
+        sigma: state.sigma, // Include sigma
       }
     })}\n\n`);
-
-    subscribeToTicker(currentTicker, currentOptionSymbols);
 
     const interval = setInterval(() => {
       res.write(`data: ${JSON.stringify({ heartbeat: "keep-alive" })}\n\n`);
     }, 10000);
 
-    streamingClient.streamListen("message", async (message) => {
-      console.log("[2D] WebSocket message received:", message);
-      if (!message.includes('"data"')) {
-        console.log("[2D] Skipping non-data message:", message);
-        return;
-      }
-      const data = JSON.parse(message);
+    const sendUpdate = () => {
+      const allMetrics = [
+        ...state.graphData2D.totalGex,
+        ...state.graphData2D.totalVanna,
+        ...state.graphData2D.totalCharm,
+        ...state.graphData2D.totalOi,
+        ...state.graphData2D.totalVolume,
+      ];
+      const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
+      res.write(`data: ${JSON.stringify({
+        graphData: {
+          ...state.graphData2D,
+          spotPrice: state.spotPrice,
+          vannaXRange,
+          sigma: state.sigma, // Include sigma
+        },
+        timestamp: new Date().toISOString()
+      })}\n\n`);
+    };
 
-      if (data.data?.some(item => item.service === "LEVELONE_EQUITIES")) {
-        data.data.forEach(item => {
-          if (item.service === "LEVELONE_EQUITIES" && item.content[0].key === currentTicker) {
-            const newSpotPrice = parseFloat(item.content[0]["1"]);
-            if (!isNaN(newSpotPrice) && newSpotPrice !== state.spotPrice) {
-              console.log(`[2D] Updating spotPrice from ${state.spotPrice} to ${newSpotPrice}`);
-              state.spotPrice = newSpotPrice;
-              updateGraphData2D();
-              const allMetrics = [
-                ...state.graphData2D.totalGex,
-                ...state.graphData2D.totalVanna,
-                ...state.graphData2D.totalCharm,
-                ...state.graphData2D.totalOi,
-                ...state.graphData2D.totalVolume,
-              ];
-              const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
-              res.write(`data: ${JSON.stringify({
-                graphData: {
-                  ...state.graphData2D,
-                  spotPrice: state.spotPrice,
-                  vannaXRange,
-                },
-                timestamp: new Date().toISOString()
-              })}\n\n`);
-            }
-          }
-        });
-      }
-
-      if (data.data?.some(item => item.service === "LEVELONE_OPTIONS")) {
-        let optionCount = 0;
-        data.data.forEach(item => {
-          if (item.service === "LEVELONE_OPTIONS") {
-            optionCount += item.content.length;
-            item.content.forEach(option => {
-              const symbol = option.key.trim();
-              const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
-
-              const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
-              const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
-
-              if (option["8"] !== undefined && newVolume !== existingData.volume) {
-                console.log(`[2D] Updated Volume for ${symbol}: ${existingData.volume} -> ${newVolume}`);
-              }
-              if (option["9"] !== undefined && newOi !== existingData.oi) {
-                console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
-              }
-
-              state.optionsData[symbol] = {
-                ...existingData,
-                oi: newOi,
-                volume: newVolume,
-              };
-            });
-          }
-        });
-        console.log(`[2D] Received ${optionCount} options from streaming`);
-        updateGraphData2D();
-        const allMetrics = [
-          ...state.graphData2D.totalGex,
-          ...state.graphData2D.totalVanna,
-          ...state.graphData2D.totalCharm,
-          ...state.graphData2D.totalOi,
-          ...state.graphData2D.totalVolume,
-        ];
-        const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
-        res.write(`data: ${JSON.stringify({
-          graphData: {
-            ...state.graphData2D,
-            spotPrice: state.spotPrice,
-            vannaXRange,
-          },
-          timestamp: new Date().toISOString()
-        })}\n\n`);
-      }
-    });
+    const originalUpdateGraphData2D = updateGraphData2D;
+    updateGraphData2D = () => {
+      originalUpdateGraphData2D();
+      sendUpdate();
+    };
 
     req.on("close", () => {
       clearInterval(interval);
-      unsubscribeFromTicker(currentTicker, currentOptionSymbols);
+      updateGraphData2D = originalUpdateGraphData2D;
       console.log("[2D] Client disconnected from SSE");
       res.end();
     });

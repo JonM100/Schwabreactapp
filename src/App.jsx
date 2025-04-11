@@ -21,6 +21,16 @@ const App = () => {
     },
     vannaXRange: [0, 0],
     putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 },
+    optionsData: {},
+    expirationDates: [],
+    expDatesWithTime: {},
+  });
+  const [gammaProfile, setGammaProfile] = useState({
+    levels: [],
+    totalGamma: [],
+    totalGammaExNext: [],
+    totalGammaExFri: [],
+    flipPoint: null,
   });
   const [ticker, setTicker] = useState("SPY");
   const [fromDate, setFromDate] = useState(new Date().toISOString().split("T")[0]);
@@ -30,6 +40,110 @@ const App = () => {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const eventSourceRef = useRef(null);
+
+  // Normal PDF for Black-Scholes
+  const normPdf = (x) => (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
+
+  // Black-Scholes Gamma
+  const blackScholesGamma = (S, K, T, r, sigma) => {
+    if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0;
+    try {
+      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+      const gamma = normPdf(d1) / (S * sigma * Math.sqrt(T));
+      return isNaN(gamma) || !isFinite(gamma) ? 0 : gamma;
+    } catch (e) {
+      return 0;
+    }
+  };
+
+  const calculateGammaProfile = (data = graphData) => {
+    if (
+      !data.optionsData ||
+      !data.expirationDates ||
+      !data.expDatesWithTime ||
+      !data.spotPrice
+    ) {
+      return {
+        levels: [],
+        totalGamma: [],
+        totalGammaExNext: [],
+        totalGammaExFri: [],
+        flipPoint: null,
+      };
+    }
+
+    // Define range of spot prices
+    const spotPrice = data.spotPrice;
+    const fromPrice = spotPrice * 0.8;
+    const toPrice = spotPrice * 1.2;
+    const numPoints = 60;
+    const levels = Array.from(
+      { length: numPoints },
+      (_, i) => fromPrice + (i * (toPrice - fromPrice)) / (numPoints - 1)
+    );
+
+    // Find next expiry and next monthly expiry
+    const expirationDates = data.expirationDates.map(date => new Date(date));
+    const nextExpiry = new Date(Math.min(...expirationDates.map(date => date.getTime())));
+    const thirdFridays = expirationDates.filter(date => {
+      const day = date.getDate();
+      const weekday = date.getDay();
+      return weekday === 4 && day >= 15 && day <= 21;
+    });
+    const nextMonthlyExp = new Date(Math.min(...thirdFridays.map(date => date.getTime())));
+
+    // Calculate gamma exposure for each level
+    const sigma = 0.2; // Should come from backend
+    const r = 0.01;
+    const totalGamma = [];
+    const totalGammaExNext = [];
+    const totalGammaExFri = [];
+
+    for (const level of levels) {
+      let gammaAll = 0;
+      let gammaExNext = 0;
+      let gammaExFri = 0;
+
+      for (const symbol in data.optionsData) {
+        const option = data.optionsData[symbol];
+        const { strikePrice, oi, expirationDate, optionType } = option;
+        if (!strikePrice || !oi || !expirationDate || !optionType) continue;
+
+        const expDateStr = new Date(expirationDate).toISOString().split("T")[0];
+        const t = data.expDatesWithTime[expDateStr] || 30 / 365;
+        const gamma = blackScholesGamma(level, strikePrice, t, r, sigma);
+        const multiplier = optionType === "call" ? 1 : -1;
+        const gammaEx = multiplier * gamma * oi * 100 * level * level * 0.01;
+
+        gammaAll += gammaEx;
+        if (expDateStr !== nextExpiry.toISOString().split("T")[0]) {
+          gammaExNext += gammaEx;
+        }
+        if (expDateStr !== nextMonthlyExp.toISOString().split("T")[0]) {
+          gammaExFri += gammaEx;
+        }
+      }
+
+      totalGamma.push(gammaAll / 10 ** 9);
+      totalGammaExNext.push(gammaExNext / 10 ** 9);
+      totalGammaExFri.push(gammaExFri / 10 ** 9);
+    }
+
+    // Calculate gamma flip point
+    let flipPoint = null;
+    for (let i = 0; i < totalGamma.length - 1; i++) {
+      if (totalGamma[i] * totalGamma[i + 1] < 0) {
+        const negGamma = totalGamma[i];
+        const posGamma = totalGamma[i + 1];
+        const negStrike = levels[i];
+        const posStrike = levels[i + 1];
+        flipPoint = posStrike - ((posStrike - negStrike) * posGamma) / (posGamma - negGamma);
+        break;
+      }
+    }
+
+    return { levels, totalGamma, totalGammaExNext, totalGammaExFri, flipPoint };
+  };
 
   const fetchInitialData = async () => {
     try {
@@ -43,6 +157,8 @@ const App = () => {
       } else {
         setGraphData(data);
         setLastRefresh(new Date().toLocaleString());
+        const profile = calculateGammaProfile(data);
+        setGammaProfile(profile);
       }
     } catch (err) {
       console.error("[2D] Fetch Initial Data Error:", err);
@@ -71,6 +187,8 @@ const App = () => {
         const newData = message.initialData || message.graphData;
         setGraphData(newData);
         setLastRefresh(new Date().toLocaleString());
+        const profile = calculateGammaProfile(newData);
+        setGammaProfile(profile);
       } else if (message.error) {
         console.error("[2D] SSE Error from server:", message.error);
       }
@@ -131,28 +249,13 @@ const App = () => {
     handleTickerChange();
   };
 
-  const calculateGexMetrics = () => {
-    const totalGex = graphData.totalGex.reduce((sum, value) => sum + value, 0);
-    let flipPoint = null;
-    for (let i = 0; i < graphData.strikes.length - 1; i++) {
-      if (graphData.totalGex[i] * graphData.totalGex[i + 1] < 0) {
-        const x0 = graphData.strikes[i];
-        const x1 = graphData.strikes[i + 1];
-        const y0 = graphData.totalGex[i];
-        const y1 = graphData.totalGex[i + 1];
-        flipPoint = x0 - (y0 * (x1 - x0)) / (y1 - y0);
-        break;
-      }
-    }
-    return { totalGex, flipPoint };
-  };
-
-  const { totalGex, flipPoint } = calculateGexMetrics();
+  const totalGex = graphData.totalGex.reduce((sum, value) => sum + value, 0) / 10 ** 9;
+  const flipPoint = gammaProfile.flipPoint;
 
   const createBarData = (key, title, positiveColor, negativeColor) => {
     const dataWithIndex = graphData.strikes.map((strike, idx) => ({
       strike,
-      value: graphData[key][idx] || 0,
+      value: (graphData[key][idx] || 0) / 10 ** 9,
     }));
 
     const positiveData = dataWithIndex
@@ -216,7 +319,7 @@ const App = () => {
   };
 
   const getXRange = (key) => {
-    const values = graphData[key].map(val => val || 0);
+    const values = graphData[key].map(val => (val || 0) / 10 ** 9);
     return [Math.min(...values, 0) * 1.1, Math.max(...values, 0) * 1.1];
   };
 
@@ -309,6 +412,103 @@ const App = () => {
     showlegend: false,
     margin: { t: 40, b: 40, l: 40, r: 40 },
   };
+
+  const gammaProfileLayout = {
+    width: 800,
+    height: 500,
+    plot_bgcolor: "rgba(0, 0, 0, 0)",
+    paper_bgcolor: "rgba(0, 0, 0, 0)",
+    font: { family: "Arial, sans-serif", size: 12, color: "#e0e0e0" },
+    xaxis: {
+      title: "Index Price",
+      showgrid: true,
+      zeroline: false,
+      titlefont: { color: "#e0e0e0" },
+      tickfont: { color: "#e0e0e0" },
+      range: [graphData.spotPrice * 0.8, graphData.spotPrice * 1.2],
+    },
+    yaxis: {
+      title: "Gamma Exposure ($ billions/1% move)",
+      showgrid: true,
+      zeroline: true,
+      titlefont: { color: "#e0e0e0" },
+      tickfont: { color: "#e0e0e0" },
+    },
+    legend: {
+      x: 1,
+      y: 1,
+      bgcolor: "rgba(30, 30, 30, 0.8)",
+      font: { color: "#e0e0e0" },
+    },
+    annotations: [],
+    shapes: [
+      {
+        type: "rect",
+        x0: graphData.spotPrice * 0.8,
+        x1: gammaProfile.flipPoint || graphData.spotPrice,
+        y0: Math.min(...gammaProfile.totalGamma, 0) * 1.1 || -1,
+        y1: Math.max(...gammaProfile.totalGamma, 0) * 1.1 || 1,
+        fillcolor: "rgba(255, 0, 0, 0.1)",
+        line: { width: 0 },
+      },
+      {
+        type: "rect",
+        x0: gammaProfile.flipPoint || graphData.spotPrice,
+        x1: graphData.spotPrice * 1.2,
+        y0: Math.min(...gammaProfile.totalGamma, 0) * 1.1 || -1,
+        y1: Math.max(...gammaProfile.totalGamma, 0) * 1.1 || 1,
+        fillcolor: "rgba(0, 255, 0, 0.1)",
+        line: { width: 0 },
+      },
+    ],
+  };
+
+  const gammaProfileData = [
+    {
+      x: gammaProfile.levels,
+      y: gammaProfile.totalGamma,
+      type: "scatter",
+      mode: "lines",
+      name: "All Expiries",
+      line: { color: "#1f77b4" },
+    },
+    {
+      x: gammaProfile.levels,
+      y: gammaProfile.totalGammaExNext,
+      type: "scatter",
+      mode: "lines",
+      name: "Ex-Next Expiry",
+      line: { color: "#ff7f0e" },
+    },
+    {
+      x: gammaProfile.levels,
+      y: gammaProfile.totalGammaExFri,
+      type: "scatter",
+      mode: "lines",
+      name: "Ex-Next Monthly Expiry",
+      line: { color: "#2ca02c" },
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: [graphData.spotPrice, graphData.spotPrice],
+      y: [Math.min(...gammaProfile.totalGamma, 0) * 1.1 || -1, Math.max(...gammaProfile.totalGamma, 0) * 1.1 || 1],
+      line: { color: "#ff0000", width: 1 },
+      name: `Spot: ${graphData.spotPrice.toFixed(0)}`,
+    },
+    ...(gammaProfile.flipPoint
+      ? [
+          {
+            type: "scatter",
+            mode: "lines",
+            x: [gammaProfile.flipPoint, gammaProfile.flipPoint],
+            y: [Math.min(...gammaProfile.totalGamma, 0) * 1.1 || -1, Math.max(...gammaProfile.totalGamma, 0) * 1.1 || 1],
+            line: { color: "#00ff00", width: 1 },
+            name: `Gamma Flip: ${gammaProfile.flipPoint.toFixed(0)}`,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div className="app-container">
@@ -443,6 +643,18 @@ const App = () => {
               ...layout,
               xaxis: { ...layout.xaxis, range: getXRange("totalVolume") },
               title: { text: `Volume - ${ticker}`, font: { color: "#ffffff" } },
+            }}
+          />
+        </div>
+      </div>
+      <div className="chart-row">
+        <div className="chart-container">
+          <h2>Gamma Exposure Profile</h2>
+          <Plot
+            data={gammaProfileData}
+            layout={{
+              ...gammaProfileLayout,
+              title: { text: `Gamma Exposure Profile - ${ticker}`, font: { color: "#ffffff" } },
             }}
           />
         </div>
