@@ -375,7 +375,7 @@ const App = () => {
           </div>
           <Plot
             data={[
-              ...createBarData("totalGex", "GEX", "#1f77b4", "#ff7f0e"),
+              ...createBarData("totalGex", "GEX", "#00ff99", "#ff003c"),
               spotPriceLine("totalGex"),
               ...(gammaFlipLine ? [gammaFlipLine] : []),
             ]}
@@ -392,7 +392,7 @@ const App = () => {
             <p>Spot Price: ${graphData.spotPrice.toFixed(2)}</p>
           </div>
           <Plot
-            data={[...createBarData("totalVanna", "Vanna", "#2ca02c", "#d62728"), spotPriceLine("totalVanna")]}
+            data={[...createBarData("totalVanna", "Vanna", "#00ff99", "#ff003c"), spotPriceLine("totalVanna")]}
             layout={{
               ...layout,
               xaxis: { ...layout.xaxis, range: getXRange("totalVanna") },
@@ -408,7 +408,7 @@ const App = () => {
             <p>Spot Price: ${graphData.spotPrice.toFixed(2)}</p>
           </div>
           <Plot
-            data={[...createBarData("totalCharm", "Charm", "#fca708", "#fca708"), spotPriceLine("totalCharm")]}
+            data={[...createBarData("totalCharm", "Charm", "#ff003c","#00ff99"), spotPriceLine("totalCharm")]}
             layout={{
               ...layout,
               xaxis: { ...layout.xaxis, range: getXRange("totalCharm") },
@@ -422,7 +422,7 @@ const App = () => {
             <p>Spot Price: ${graphData.spotPrice.toFixed(2)}</p>
           </div>
           <Plot
-            data={[...createBarData("totalOi", "OI", "#2ca02c", "#d62728"), spotPriceLine("totalOi")]}
+            data={[...createBarData("totalOi", "OI", "#00ff99", "#ff003c"), spotPriceLine("totalOi")]}
             layout={{
               ...layout,
               xaxis: { ...layout.xaxis, range: getXRange("totalOi") },
@@ -438,7 +438,7 @@ const App = () => {
             <p>Spot Price: ${graphData.spotPrice.toFixed(2)}</p>
           </div>
           <Plot
-            data={[...createBarData("totalVolume", "Volume", "#2ca02c", "#d62728"), spotPriceLine("totalVolume")]}
+            data={[...createBarData("totalVolume", "Volume","#00ff99", "#ff003c"), spotPriceLine("totalVolume")]}
             layout={{
               ...layout,
               xaxis: { ...layout.xaxis, range: getXRange("totalVolume") },
