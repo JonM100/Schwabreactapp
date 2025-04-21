@@ -1,56 +1,42 @@
-import React, { useState, useEffect } from "react";
+import React, { useContext, useEffect } from "react";
 import Plot from "react-plotly.js";
+import { MarketContext } from "./MarketContext";
 import Navbar from "./Navbar";
+import InputForm from "./InputForm";
 import "./App.css";
 
 const Gex3DPage = () => {
-  const [graphData, setGraphData] = useState({
-    strikes: [],
-    expirationDates: [],
-    optionsData: {},
-  });
-  const [ticker, setTicker] = useState("SPY");
-  const [fromDate, setFromDate] = useState(new Date().toISOString().split("T")[0]);
-  const [toDate, setToDate] = useState(
-    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
-  );
-
-  const fetchInitialData = async () => {
-    try {
-      const response = await fetch(
-        `http://localhost:5001/market-data-3d?ticker=${ticker}&fromDate=${fromDate}&toDate=${toDate}`
-      );
-      const data = await response.json();
-      if (data.error) {
-        console.error("[3D] Server Error:", data.error);
-      } else {
-        setGraphData(data);
-      }
-    } catch (err) {
-      console.error("[3D] Fetch Error:", err);
-    }
-  };
+  const {
+    graphData3D,
+    ticker,
+    setTicker,
+    fromDate,
+    setFromDate,
+    toDate,
+    setToDate,
+    fetchInitialData3D,
+    handleTickerChange,
+  } = useContext(MarketContext);
 
   useEffect(() => {
-    fetchInitialData();
-  }, [ticker, fromDate, toDate]);
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    fetchInitialData();
-  };
+    fetchInitialData3D();
+  }, [ticker, fromDate, toDate, fetchInitialData3D]);
 
   const prepare3DGexData = () => {
-    const { strikes, expirationDates, optionsData } = graphData;
+    const { strikes, expirationDates, optionsData } = graphData3D;
     const expirations = [...expirationDates]
-      .map(date => date.split(":")[0])
+      .map((date) => date.split(":")[0])
       .sort((a, b) => new Date(a) - new Date(b));
 
-    const zData = expirations.map(exp =>
-      strikes.map(strike => {
+    const zData = expirations.map((exp) =>
+      strikes.map((strike) => {
         const expCode = exp.replace(/-/g, "").slice(2);
-        const call = `${ticker.padEnd(6)}${expCode}C${(strike * 1000).toString().padStart(8, "0")}`;
-        const put = `${ticker.padEnd(6)}${expCode}P${(strike * 1000).toString().padStart(8, "0")}`;
+        const call = `${ticker.padEnd(6)}${expCode}C${(strike * 1000)
+          .toString()
+          .padStart(8, "0")}`;
+        const put = `${ticker.padEnd(6)}${expCode}P${(strike * 1000)
+          .toString()
+          .padStart(8, "0")}`;
         const callGex = (optionsData[call]?.oi || 0) * (optionsData[call]?.gamma || 0);
         const putGex = (optionsData[put]?.oi || 0) * (optionsData[put]?.gamma || 0);
         return (callGex - putGex) * 100;
@@ -110,37 +96,15 @@ const Gex3DPage = () => {
     <div className="app-container">
       <Navbar />
       <h1 className="app-title">3D GEX Dashboard</h1>
-      <form onSubmit={handleSubmit} className="input-form">
-        <div className="input-group">
-          <label htmlFor="ticker">Ticker:</label>
-          <input
-            type="text"
-            id="ticker"
-            value={ticker}
-            onChange={e => setTicker(e.target.value.toUpperCase())}
-            placeholder="Enter ticker (e.g., SPY)"
-          />
-        </div>
-        <div className="input-group">
-          <label htmlFor="fromDate">From Date:</label>
-          <input
-            type="date"
-            id="fromDate"
-            value={fromDate}
-            onChange={e => setFromDate(e.target.value)}
-          />
-        </div>
-        <div className="input-group">
-          <label htmlFor="toDate">To Date:</label>
-          <input
-            type="date"
-            id="toDate"
-            value={toDate}
-            onChange={e => setToDate(e.target.value)}
-          />
-        </div>
-        <button type="submit">Update</button>
-      </form>
+      <InputForm
+        ticker={ticker}
+        setTicker={setTicker}
+        fromDate={fromDate}
+        setFromDate={setFromDate}
+        toDate={toDate}
+        setToDate={setToDate}
+        handleSubmit={handleTickerChange}
+      />
       <div className="chart-container-3d">
         <h2>3D Net GEX Surface</h2>
         <Plot data={[prepare3DGexData()]} layout={layout} />
