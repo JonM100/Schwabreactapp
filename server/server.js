@@ -192,33 +192,65 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
       ...Object.keys(optionChain.putExpDateMap).map(k => k.split(":")[0]),
     ])].sort();
 
-    const optionSymbols = [];
-    state.optionsData = {};
+    // Collect all strikes first to find the closest 50 to spotPrice
+    const allStrikes = new Set();
     for (const exp in optionChain.callExpDateMap) {
       for (const strike in optionChain.callExpDateMap[exp]) {
-        const option = optionChain.callExpDateMap[exp][strike][0];
-        const symbol = option.symbol;
-        optionSymbols.push(symbol);
-        state.optionsData[symbol] = {
-          oi: option.openInterest || 0,
-          volume: option.totalVolume || 0,
-          strikePrice: parseFloat(strike),
-        };
+        allStrikes.add(parseFloat(strike));
       }
     }
     for (const exp in optionChain.putExpDateMap) {
       for (const strike in optionChain.putExpDateMap[exp]) {
-        const option = optionChain.putExpDateMap[exp][strike][0];
-        const symbol = option.symbol;
-        optionSymbols.push(symbol);
-        state.optionsData[symbol] = {
-          oi: option.openInterest || 0,
-          volume: option.totalVolume || 0,
-          strikePrice: parseFloat(strike),
-        };
+        allStrikes.add(parseFloat(strike));
       }
     }
-    console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker}`);
+    const sortedStrikes = Array.from(allStrikes).sort((a, b) => a - b);
+
+    // Select approximately 50 strikes around spotPrice
+    const targetStrikeCount = 50;
+    const strikesAroundSpot = sortedStrikes
+      .map(strike => ({
+        strike,
+        distance: Math.abs(strike - state.spotPrice),
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, targetStrikeCount)
+      .map(item => item.strike)
+      .sort((a, b) => a - b);
+
+    const optionSymbols = [];
+    state.optionsData = {};
+    for (const exp in optionChain.callExpDateMap) {
+      for (const strike in optionChain.callExpDateMap[exp]) {
+        const strikePrice = parseFloat(strike);
+        if (strikesAroundSpot.includes(strikePrice)) {
+          const option = optionChain.callExpDateMap[exp][strike][0];
+          const symbol = option.symbol;
+          optionSymbols.push(symbol);
+          state.optionsData[symbol] = {
+            oi: option.openInterest || 0,
+            volume: option.totalVolume || 0,
+            strikePrice,
+          };
+        }
+      }
+    }
+    for (const exp in optionChain.putExpDateMap) {
+      for (const strike in optionChain.putExpDateMap[exp]) {
+        const strikePrice = parseFloat(strike);
+        if (strikesAroundSpot.includes(strikePrice)) {
+          const option = optionChain.putExpDateMap[exp][strike][0];
+          const symbol = option.symbol;
+          optionSymbols.push(symbol);
+          state.optionsData[symbol] = {
+            oi: option.openInterest || 0,
+            volume: option.totalVolume || 0,
+            strikePrice,
+          };
+        }
+      }
+    }
+    console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker} with ${strikesAroundSpot.length} strikes`);
     return optionSymbols;
   } catch (e) {
     console.error("Error fetching initial data:", e);
