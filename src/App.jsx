@@ -10,17 +10,17 @@ import "./App.css";
 const App = () => {
   const {
     graphData2D,
-    ticker,
-    fromDate,
-    toDate,
+    ticker2D,
+    fromDate2D,
+    toDate2D,
     lastRefresh,
     isStreaming,
     startStream,
     stopStream,
-    setTicker,
-    setFromDate,
-    setToDate,
-    handleTickerChange,
+    setTicker2D,
+    setFromDate2D,
+    setToDate2D,
+    handleTickerChange2D,
   } = useContext(MarketContext);
 
   const calculateGexMetrics = () => {
@@ -55,17 +55,17 @@ const App = () => {
         Last Refreshed: {lastRefresh || "Waiting for data..."}
       </div>
       <InputForm
-        ticker={ticker}
-        setTicker={setTicker}
-        fromDate={fromDate}
-        setFromDate={setFromDate}
-        toDate={toDate}
-        setToDate={setToDate}
-        handleSubmit={handleTickerChange}
+        ticker={ticker2D}
+        setTicker={setTicker2D}
+        fromDate={fromDate2D}
+        setFromDate={setFromDate2D}
+        toDate={toDate2D}
+        setToDate={setToDate2D}
+        handleSubmit={handleTickerChange2D}
       />
       <div className="chart-row">
         <ChartContainer
-          title={`Gamma Exposure (GEX) - ${ticker}`}
+          title={`Gamma Exposure (GEX) - ${ticker2D}`}
           dataKey="totalGex"
           graphData={graphData2D}
           spotPrice={graphData2D.spotPrice}
@@ -79,7 +79,7 @@ const App = () => {
           }}
         />
         <ChartContainer
-          title={`Vanna Exposure - ${ticker}`}
+          title={`Vanna Exposure - ${ticker2D}`}
           dataKey="totalVanna"
           graphData={graphData2D}
           spotPrice={graphData2D.spotPrice}
@@ -92,7 +92,7 @@ const App = () => {
       </div>
       <div className="chart-row">
         <ChartContainer
-          title={`Charm Exposure - ${ticker}`}
+          title={`Charm Exposure - ${ticker2D}`}
           dataKey="totalCharm"
           graphData={graphData2D}
           spotPrice={graphData2D.spotPrice}
@@ -103,7 +103,7 @@ const App = () => {
           }}
         />
         <ChartContainer
-          title={`Open Interest (OI) - ${ticker}`}
+          title={`Open Interest (OI) - ${ticker2D}`}
           dataKey="totalOi"
           graphData={graphData2D}
           spotPrice={graphData2D.spotPrice}
@@ -116,7 +116,7 @@ const App = () => {
       </div>
       <div className="chart-row">
         <ChartContainer
-          title={`Volume - ${ticker}`}
+          title={`Volume - ${ticker2D}`}
           dataKey="totalVolume"
           graphData={graphData2D}
           spotPrice={graphData2D.spotPrice}

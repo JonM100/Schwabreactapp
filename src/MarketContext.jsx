@@ -26,9 +26,14 @@ export const MarketProvider = ({ children }) => {
     expirationDates: [],
     optionsData: {},
   });
-  const [ticker, setTicker] = useState("SPY");
-  const [fromDate, setFromDate] = useState(new Date().toISOString().split("T")[0]);
-  const [toDate, setToDate] = useState(
+  const [ticker2D, setTicker2D] = useState("SPY");
+  const [fromDate2D, setFromDate2D] = useState(new Date().toISOString().split("T")[0]);
+  const [toDate2D, setToDate2D] = useState(
+    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+  );
+  const [ticker3D, setTicker3D] = useState("SPY");
+  const [fromDate3D, setFromDate3D] = useState(new Date().toISOString().split("T")[0]);
+  const [toDate3D, setToDate3D] = useState(
     new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
   );
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -37,7 +42,7 @@ export const MarketProvider = ({ children }) => {
 
   const fetchInitialData2D = async () => {
     try {
-      const url = `http://localhost:5002/market-data?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
+      const url = `http://localhost:5002/market-data?ticker=${encodeURIComponent(ticker2D)}&fromDate=${encodeURIComponent(fromDate2D)}&toDate=${encodeURIComponent(toDate2D)}`;
       console.log("[2D] Fetching data from:", url);
       const response = await fetch(url);
       if (!response.ok) {
@@ -58,7 +63,7 @@ export const MarketProvider = ({ children }) => {
 
   const fetchInitialData3D = async () => {
     try {
-      const url = `http://localhost:5002/market-data-3d?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
+      const url = `http://localhost:5002/market-data-3d?ticker=${encodeURIComponent(ticker3D)}&fromDate=${encodeURIComponent(fromDate3D)}&toDate=${encodeURIComponent(toDate3D)}`;
       console.log("[3D] Fetching data from:", url);
       const response = await fetch(url);
       if (!response.ok) {
@@ -83,7 +88,7 @@ export const MarketProvider = ({ children }) => {
       console.log("[2D] Closed existing SSE connection");
     }
 
-    const url = `http://localhost:5002/market-stream?ticker=${encodeURIComponent(ticker)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`;
+    const url = `http://localhost:5002/market-stream?ticker=${encodeURIComponent(ticker2D)}&fromDate=${encodeURIComponent(fromDate2D)}&toDate=${encodeURIComponent(toDate2D)}`;
     console.log("[2D] Connecting SSE to:", url);
     eventSourceRef.current = new EventSource(url);
 
@@ -99,8 +104,11 @@ export const MarketProvider = ({ children }) => {
 
         if (message.initialData || message.graphData) {
           const newData = message.initialData || message.graphData;
+          console.log("[2D] Updating graphData2D with new data:", newData);
           setGraphData2D(newData);
           setLastRefresh(new Date().toLocaleString());
+          // Log 3D state to ensure no changes
+          console.log("[2D] Current 3D state:", { ticker3D, fromDate3D, toDate3D });
         } else if (message.error) {
           console.error("[2D] SSE Error from server:", message.error);
         }
@@ -136,15 +144,22 @@ export const MarketProvider = ({ children }) => {
     setIsStreaming(false);
   };
 
-  const handleTickerChange = async () => {
-    console.log("[Context] Handling ticker change for:", ticker);
+  const handleTickerChange2D = async () => {
+    console.log("[2D] Handling ticker change for:", ticker2D);
+    console.log("[2D] 3D state before change:", { ticker3D, fromDate3D, toDate3D });
     if (isStreaming) {
       stopStream();
-      await Promise.all([fetchInitialData2D(), fetchInitialData3D()]);
+      await fetchInitialData2D();
       startStream();
     } else {
-      await Promise.all([fetchInitialData2D(), fetchInitialData3D()]);
+      await fetchInitialData2D();
     }
+    console.log("[2D] 3D state after change:", { ticker3D, fromDate3D, toDate3D });
+  };
+
+  const handleTickerChange3D = async () => {
+    console.log("[3D] Handling ticker change for:", ticker3D);
+    await fetchInitialData3D();
   };
 
   useEffect(() => {
@@ -167,17 +182,24 @@ export const MarketProvider = ({ children }) => {
       value={{
         graphData2D,
         graphData3D,
-        ticker,
-        setTicker,
-        fromDate,
-        setFromDate,
-        toDate,
-        setToDate,
+        ticker2D,
+        setTicker2D,
+        fromDate2D,
+        setFromDate2D,
+        toDate2D,
+        setToDate2D,
+        ticker3D,
+        setTicker3D,
+        fromDate3D,
+        setFromDate3D,
+        toDate3D,
+        setToDate3D,
         lastRefresh,
         isStreaming,
         startStream,
         stopStream,
-        handleTickerChange,
+        handleTickerChange2D,
+        handleTickerChange3D,
         fetchInitialData2D,
         fetchInitialData3D,
       }}

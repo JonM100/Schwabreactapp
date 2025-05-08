@@ -17,13 +17,13 @@ let marketClient = null;
 let streamingClient = null;
 let isWebSocketOpen = false;
 
-const state = {
+const state2D = {
   ticker: process.env.TICKER || "SPY",
   expirationDates: [],
   spotPrice: 0,
   sigma: 0.2,
   optionsData: {},
-  graphData2D: {
+  graphData: {
     strikes: [],
     totalGex: [],
     totalVanna: [],
@@ -39,7 +39,14 @@ const state = {
     },
     putCallTotals: { callOi: 0, putOi: 0, callVolume: 0, putVolume: 0 },
   },
-  graphData3D: {
+};
+
+const state3D = {
+  ticker: process.env.TICKER || "SPY",
+  expirationDates: [],
+  spotPrice: 0,
+  sigma: 0.2,
+  graphData: {
     strikes: [],
     expirationDates: [],
     optionsData: {},
@@ -162,24 +169,25 @@ async function initializeClients() {
   });
 }
 
-const fetchInitialData = async (ticker, fromDate, toDate) => {
+const fetchInitialData = async (ticker, fromDate, toDate, is3D = false) => {
   try {
+    const targetState = is3D ? state3D : state2D;
     console.log(`Fetching quotes for ${ticker}...`);
     const quote = await marketClient.quotes(ticker);
     if (!quote || !quote[ticker] || !quote[ticker].quote || typeof quote[ticker].quote.lastPrice !== "number") {
       throw new Error(`Invalid quote response for ${ticker}: ${JSON.stringify(quote)}`);
     }
-    state.ticker = ticker;
-    state.spotPrice = quote[ticker].quote.lastPrice || 0;
-    if (state.spotPrice === 0) {
+    targetState.ticker = ticker;
+    targetState.spotPrice = quote[ticker].quote.lastPrice || 0;
+    if (targetState.spotPrice === 0) {
       console.error(`[Initial] Spot price for ${ticker} is 0, setting default to 100`);
-      state.spotPrice = 100; // Fallback value
+      targetState.spotPrice = 100; // Fallback value
     }
 
     console.log(`Fetching option chain for ${ticker} from ${fromDate} to ${toDate}...`);
     const optionChain = await marketClient.chains(ticker, {
       contractType: "ALL",
-      strikeCount: 100,
+      strikeCount: 50,
       includeUnderlyingQuote: true,
       strategy: "SINGLE",
       range: "ALL",
@@ -187,12 +195,12 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
       toDate: toDate.toISOString().split("T")[0],
     });
     console.log(`optionChain ${ticker} from ${fromDate} to ${toDate}...`);
-    state.expirationDates = [...new Set([
+    targetState.expirationDates = [...new Set([
       ...Object.keys(optionChain.callExpDateMap).map(k => k.split(":")[0]),
       ...Object.keys(optionChain.putExpDateMap).map(k => k.split(":")[0]),
-    ])].sort();
+    ])].sort((a, b) => new Date(a) - new Date(b));
 
-    // Collect all strikes first to find the closest 50 to spotPrice
+    // Collect all strikes
     const allStrikes = new Set();
     for (const exp in optionChain.callExpDateMap) {
       for (const strike in optionChain.callExpDateMap[exp]) {
@@ -204,30 +212,35 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
         allStrikes.add(parseFloat(strike));
       }
     }
-    const sortedStrikes = Array.from(allStrikes).sort((a, b) => a - b);
+    const sortedStrikes = Array.from(allStrikes);
 
-    // Select approximately 50 strikes around spotPrice
+    // Select ~50 strikes, sorted by distance from spotPrice
     const targetStrikeCount = 50;
-    const strikesAroundSpot = sortedStrikes
+    const strikesByDistance = sortedStrikes
       .map(strike => ({
         strike,
-        distance: Math.abs(strike - state.spotPrice),
+        distance: Math.abs(strike - targetState.spotPrice),
       }))
-      .sort((a, b) => a.distance - b.distance)
+      .sort((a, b) => a.distance - b.distance || a.strike - b.strike) // Sort by distance, then strike for stability
       .slice(0, targetStrikeCount)
       .map(item => item.strike)
-      .sort((a, b) => a - b);
+      .sort((a, b) => {
+        const distA = Math.abs(a - targetState.spotPrice);
+        const distB = Math.abs(b - targetState.spotPrice);
+        return distA - distB || a - b; // Ascending from midpoint
+      });
 
     const optionSymbols = [];
-    state.optionsData = {};
+    const targetOptionsData = {};
+
     for (const exp in optionChain.callExpDateMap) {
       for (const strike in optionChain.callExpDateMap[exp]) {
         const strikePrice = parseFloat(strike);
-        if (strikesAroundSpot.includes(strikePrice)) {
+        if (strikesByDistance.includes(strikePrice)) {
           const option = optionChain.callExpDateMap[exp][strike][0];
           const symbol = option.symbol;
           optionSymbols.push(symbol);
-          state.optionsData[symbol] = {
+          targetOptionsData[symbol] = {
             oi: option.openInterest || 0,
             volume: option.totalVolume || 0,
             strikePrice,
@@ -238,11 +251,11 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
     for (const exp in optionChain.putExpDateMap) {
       for (const strike in optionChain.putExpDateMap[exp]) {
         const strikePrice = parseFloat(strike);
-        if (strikesAroundSpot.includes(strikePrice)) {
+        if (strikesByDistance.includes(strikePrice)) {
           const option = optionChain.putExpDateMap[exp][strike][0];
           const symbol = option.symbol;
           optionSymbols.push(symbol);
-          state.optionsData[symbol] = {
+          targetOptionsData[symbol] = {
             oi: option.openInterest || 0,
             volume: option.totalVolume || 0,
             strikePrice,
@@ -250,7 +263,14 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
         }
       }
     }
-    console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker} with ${strikesAroundSpot.length} strikes`);
+
+    if (is3D) {
+      targetState.graphData.optionsData = targetOptionsData;
+    } else {
+      targetState.optionsData = targetOptionsData;
+    }
+
+    console.log(`Fetched ${optionSymbols.length} option symbols for ${ticker} with ${strikesByDistance.length} strikes`);
     return optionSymbols;
   } catch (e) {
     console.error("Error fetching initial data:", e);
@@ -260,57 +280,61 @@ const fetchInitialData = async (ticker, fromDate, toDate) => {
 
 const updateGraphData2D = () => {
   const strikes = new Set();
-  for (const symbol in state.optionsData) {
-    const strike = state.optionsData[symbol].strikePrice;
+  for (const symbol in state2D.optionsData) {
+    const strike = state2D.optionsData[symbol].strikePrice;
     if (isNaN(strike)) {
       console.error(`[2D] Invalid strike for ${symbol}: ${strike}`);
       continue;
     }
     strikes.add(strike);
   }
-  state.graphData2D.strikes = Array.from(strikes).sort((a, b) => a - b);
-  const len = state.graphData2D.strikes.length;
-  state.graphData2D.totalGex = Array(len).fill(0);
-  state.graphData2D.totalVanna = Array(len).fill(0);
-  state.graphData2D.totalCharm = Array(len).fill(0);
-  state.graphData2D.totalOi = Array(len).fill(0);
-  state.graphData2D.totalVolume = Array(len).fill(0);
+  state2D.graphData.strikes = Array.from(strikes).sort((a, b) => {
+    const distA = Math.abs(a - state2D.spotPrice);
+    const distB = Math.abs(b - state2D.spotPrice);
+    return distA - distB || a - b;
+  });
+  const len = state2D.graphData.strikes.length;
+  state2D.graphData.totalGex = Array(len).fill(0);
+  state2D.graphData.totalVanna = Array(len).fill(0);
+  state2D.graphData.totalCharm = Array(len).fill(0);
+  state2D.graphData.totalOi = Array(len).fill(0);
+  state2D.graphData.totalVolume = Array(len).fill(0);
 
   let totalCallOi = 0, totalPutOi = 0, totalCallVolume = 0, totalPutVolume = 0;
 
-  const expDates = Object.fromEntries(state.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
-  for (const symbol in state.optionsData) {
+  const expDates = Object.fromEntries(state2D.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
+  for (const symbol in state2D.optionsData) {
     const cleanSymbol = symbol.trim();
     const isCall = cleanSymbol.includes("C");
     const isPut = cleanSymbol.includes("P");
     if (!isCall && !isPut) continue;
 
-    const strike = state.optionsData[symbol].strikePrice;
+    const strike = state2D.optionsData[symbol].strikePrice;
     if (isNaN(strike)) {
       console.error(`[2D] Invalid strike for ${cleanSymbol}: ${strike}`);
       continue;
     }
-    const idx = state.graphData2D.strikes.indexOf(strike);
+    const idx = state2D.graphData.strikes.indexOf(strike);
     if (idx === -1) {
       console.error(`[2D] Strike ${strike} not found in strikes array for ${cleanSymbol}`);
       continue;
     }
 
-    const oi = state.optionsData[symbol].oi || 0;
-    const volume = state.optionsData[symbol].volume || 0;
-    const expDate = state.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
+    const oi = state2D.optionsData[symbol].oi || 0;
+    const volume = state2D.optionsData[symbol].volume || 0;
+    const expDate = state2D.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
     const t = expDates[expDate] || 30 / 365;
 
-    const gamma = blackScholesGamma(state.spotPrice, strike, t, 0.01, state.sigma);
-    const vanna = blackScholesVanna(state.spotPrice, strike, t, 0.01, state.sigma);
-    const charm = blackScholesCharm(state.spotPrice, strike, t, 0.01, state.sigma, isCall ? "call" : "put");
+    const gamma = blackScholesGamma(state2D.spotPrice, strike, t, 0.01, state2D.sigma);
+    const vanna = blackScholesVanna(state2D.spotPrice, strike, t, 0.01, state2D.sigma);
+    const charm = blackScholesCharm(state2D.spotPrice, strike, t, 0.01, state2D.sigma, isCall ? "call" : "put");
     const multiplier = isCall ? 1 : -1;
 
-    state.graphData2D.totalGex[idx] += multiplier * gamma * oi * 100;
-    state.graphData2D.totalVanna[idx] += multiplier * vanna * oi * 100;
-    state.graphData2D.totalCharm[idx] += multiplier * charm * oi * 100;
-    state.graphData2D.totalOi[idx] += oi * multiplier;
-    state.graphData2D.totalVolume[idx] += volume * multiplier;
+    state2D.graphData.totalGex[idx] += multiplier * gamma * oi * 100;
+    state2D.graphData.totalVanna[idx] += multiplier * vanna * oi * 100;
+    state2D.graphData.totalCharm[idx] += multiplier * charm * oi * 100;
+    state2D.graphData.totalOi[idx] += oi * multiplier;
+    state2D.graphData.totalVolume[idx] += volume * multiplier;
 
     if (isCall) {
       totalCallOi += oi;
@@ -320,10 +344,10 @@ const updateGraphData2D = () => {
       totalPutVolume += volume;
     }
 
-    state.optionsData[symbol].gamma = gamma;
+    state2D.optionsData[symbol].gamma = gamma;
   }
 
-  state.graphData2D.putCallTotals = {
+  state2D.graphData.putCallTotals = {
     callOi: totalCallOi,
     putOi: totalPutOi,
     callVolume: totalCallVolume,
@@ -333,27 +357,25 @@ const updateGraphData2D = () => {
 
   const metrics = ["totalGex", "totalVanna", "totalCharm", "totalOi", "totalVolume"];
   metrics.forEach(metric => {
-    const values = state.graphData2D[metric];
+    const values = state2D.graphData[metric];
     if (values.length === 0) {
-      state.graphData2D.annotations[metric] = [];
+      state2D.graphData.annotations[metric] = [];
       return;
     }
     const maxIdx = values.reduce((iMax, x, i, arr) => x > arr[iMax] ? i : iMax, 0);
     const minIdx = values.reduce((iMin, x, i, arr) => x < arr[iMin] ? i : iMin, 0);
-    state.graphData2D.annotations[metric] = [
-      { strike: state.graphData2D.strikes[maxIdx], value: values[maxIdx], label: `${state.graphData2D.strikes[maxIdx]}: ${values[maxIdx].toFixed(2)}` },
-      { strike: state.graphData2D.strikes[minIdx], value: values[minIdx], label: `${state.graphData2D.strikes[minIdx]}: ${values[minIdx].toFixed(2)}` },
+    state2D.graphData.annotations[metric] = [
+      { strike: state2D.graphData.strikes[maxIdx], value: values[maxIdx], label: `${state2D.graphData.strikes[maxIdx]}: ${values[maxIdx].toFixed(2)}` },
+      { strike: state2D.graphData.strikes[minIdx], value: values[minIdx], label: `${state2D.graphData.strikes[minIdx]}: ${values[minIdx].toFixed(2)}` },
     ].filter(a => a.value !== 0);
   });
 
-  console.log(`[2D] Graph data updated with ${state.graphData2D.strikes.length} strikes`);
+  console.log(`[2D] Graph data updated with ${state2D.graphData.strikes.length} strikes`);
 };
 
 const updateGraphData3D = () => {
-  state.graphData3D.strikes = state.graphData2D.strikes;
-  state.graphData3D.expirationDates = state.expirationDates;
-  state.graphData3D.optionsData = { ...state.optionsData };
-  console.log(`[3D] Graph data updated with ${state.graphData3D.strikes.length} strikes, ${state.graphData3D.expirationDates.length} expirations`);
+  state3D.graphData.expirationDates = state3D.expirationDates;
+  console.log(`[3D] Graph data updated with ${state3D.graphData.strikes.length} strikes, ${state3D.graphData.expirationDates.length} expirations`);
 };
 
 async function waitForWebSocket() {
@@ -372,7 +394,7 @@ app.get("/market-data", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
 
   try {
-    const ticker = req.query.ticker || state.ticker;
+    const ticker = req.query.ticker || state2D.ticker;
     const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
     const toDateStr = req.query.toDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const fromDate = new Date(fromDateStr);
@@ -384,20 +406,20 @@ app.get("/market-data", async (req, res) => {
 
     await fetchInitialData(ticker, fromDate, toDate);
     updateGraphData2D();
-    console.log(`[2D] Sending initial data with ${state.graphData2D.strikes.length} strikes`);
+    console.log(`[2D] Sending initial data with ${state2D.graphData.strikes.length} strikes`);
 
     const allMetrics = [
-      ...state.graphData2D.totalGex,
-      ...state.graphData2D.totalVanna,
-      ...state.graphData2D.totalCharm,
-      ...state.graphData2D.totalOi,
-      ...state.graphData2D.totalVolume,
+      ...state2D.graphData.totalGex,
+      ...state2D.graphData.totalVanna,
+      ...state2D.graphData.totalCharm,
+      ...state2D.graphData.totalOi,
+      ...state2D.graphData.totalVolume,
     ];
     const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
 
     res.status(200).json({
-      ...state.graphData2D,
-      spotPrice: state.spotPrice,
+      ...state2D.graphData,
+      spotPrice: state2D.spotPrice,
       vannaXRange,
     });
   } catch (e) {
@@ -412,7 +434,7 @@ app.get("/market-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  let currentTicker = req.query.ticker || state.ticker;
+  let currentTicker = req.query.ticker || state2D.ticker;
   let currentOptionSymbols = [];
 
   const subscribeToTicker = (ticker, optionSymbols) => {
@@ -456,25 +478,25 @@ app.get("/market-stream", async (req, res) => {
       throw new Error("Invalid date format for fromDate or toDate");
     }
 
-    if (currentTicker !== state.ticker && currentOptionSymbols.length > 0) {
-      unsubscribeFromTicker(state.ticker, currentOptionSymbols);
+    if (currentTicker !== state2D.ticker && currentOptionSymbols.length > 0) {
+      unsubscribeFromTicker(state2D.ticker, currentOptionSymbols);
     }
 
     currentOptionSymbols = await fetchInitialData(currentTicker, fromDate, toDate);
     updateGraphData2D();
     console.log(`[2D] Sending initial data with ${currentOptionSymbols.length} options`);
     const allMetricsInitial = [
-      ...state.graphData2D.totalGex,
-      ...state.graphData2D.totalVanna,
-      ...state.graphData2D.totalCharm,
-      ...state.graphData2D.totalOi,
-      ...state.graphData2D.totalVolume,
+      ...state2D.graphData.totalGex,
+      ...state2D.graphData.totalVanna,
+      ...state2D.graphData.totalCharm,
+      ...state2D.graphData.totalOi,
+      ...state2D.graphData.totalVolume,
     ];
     const vannaXRangeInitial = [Math.min(...allMetricsInitial), Math.max(...allMetricsInitial)];
     res.write(`data: ${JSON.stringify({
       initialData: {
-        ...state.graphData2D,
-        spotPrice: state.spotPrice,
+        ...state2D.graphData,
+        spotPrice: state2D.spotPrice,
         vannaXRange: vannaXRangeInitial,
       }
     })}\n\n`);
@@ -497,22 +519,22 @@ app.get("/market-stream", async (req, res) => {
         data.data.forEach(item => {
           if (item.service === "LEVELONE_EQUITIES" && item.content[0].key === currentTicker) {
             const newSpotPrice = parseFloat(item.content[0]["1"]);
-            if (!isNaN(newSpotPrice) && newSpotPrice !== state.spotPrice) {
-              console.log(`[2D] Updating spotPrice from ${state.spotPrice} to ${newSpotPrice}`);
-              state.spotPrice = newSpotPrice;
+            if (!isNaN(newSpotPrice) && newSpotPrice !== state2D.spotPrice) {
+              console.log(`[2D] Updating spotPrice from ${state2D.spotPrice} to ${newSpotPrice}`);
+              state2D.spotPrice = newSpotPrice;
               updateGraphData2D();
               const allMetrics = [
-                ...state.graphData2D.totalGex,
-                ...state.graphData2D.totalVanna,
-                ...state.graphData2D.totalCharm,
-                ...state.graphData2D.totalOi,
-                ...state.graphData2D.totalVolume,
+                ...state2D.graphData.totalGex,
+                ...state2D.graphData.totalVanna,
+                ...state2D.graphData.totalCharm,
+                ...state2D.graphData.totalOi,
+                ...state2D.graphData.totalVolume,
               ];
               const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
               res.write(`data: ${JSON.stringify({
                 graphData: {
-                  ...state.graphData2D,
-                  spotPrice: state.spotPrice,
+                  ...state2D.graphData,
+                  spotPrice: state2D.spotPrice,
                   vannaXRange,
                 },
                 timestamp: new Date().toISOString()
@@ -529,7 +551,7 @@ app.get("/market-stream", async (req, res) => {
             optionCount += item.content.length;
             item.content.forEach(option => {
               const symbol = option.key.trim();
-              const existingData = state.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
+              const existingData = state2D.optionsData[symbol] || { oi: 0, volume: 0, gamma: 0, strikePrice: 0 };
 
               const newVolume = option["8"] !== undefined ? parseInt(option["8"]) : existingData.volume;
               const newOi = option["9"] !== undefined ? parseInt(option["9"]) : existingData.oi;
@@ -541,7 +563,7 @@ app.get("/market-stream", async (req, res) => {
                 console.log(`[2D] Updated OI for ${symbol}: ${existingData.oi} -> ${newOi}`);
               }
 
-              state.optionsData[symbol] = {
+              state2D.optionsData[symbol] = {
                 ...existingData,
                 oi: newOi,
                 volume: newVolume,
@@ -552,17 +574,17 @@ app.get("/market-stream", async (req, res) => {
         console.log(`[2D] Received ${optionCount} options from streaming`);
         updateGraphData2D();
         const allMetrics = [
-          ...state.graphData2D.totalGex,
-          ...state.graphData2D.totalVanna,
-          ...state.graphData2D.totalCharm,
-          ...state.graphData2D.totalOi,
-          ...state.graphData2D.totalVolume,
+          ...state2D.graphData.totalGex,
+          ...state2D.graphData.totalVanna,
+          ...state2D.graphData.totalCharm,
+          ...state2D.graphData.totalOi,
+          ...state2D.graphData.totalVolume,
         ];
         const vannaXRange = [Math.min(...allMetrics), Math.max(...allMetrics)];
         res.write(`data: ${JSON.stringify({
           graphData: {
-            ...state.graphData2D,
-            spotPrice: state.spotPrice,
+            ...state2D.graphData,
+            spotPrice: state2D.spotPrice,
             vannaXRange,
           },
           timestamp: new Date().toISOString()
@@ -589,7 +611,7 @@ app.get("/market-data-3d", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
 
   try {
-    const ticker = req.query.ticker || state.ticker;
+    const ticker = req.query.ticker || state3D.ticker;
     const fromDateStr = req.query.fromDate || new Date().toISOString().split("T")[0];
     const toDateStr = req.query.toDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const fromDate = new Date(fromDateStr);
@@ -599,12 +621,48 @@ app.get("/market-data-3d", async (req, res) => {
       throw new Error("Invalid date format for fromDate or toDate");
     }
 
-    const optionSymbols = await fetchInitialData(ticker, fromDate, toDate);
-    updateGraphData2D();
+    const optionSymbols = await fetchInitialData(ticker, fromDate, toDate, true);
+    state3D.sigma = await calculateSigma(ticker);
+
+    // Calculate strikes independently for 3D
+    const strikes = new Set();
+    for (const symbol in state3D.graphData.optionsData) {
+      const strike = state3D.graphData.optionsData[symbol].strikePrice;
+      if (!isNaN(strike)) {
+        strikes.add(strike);
+      }
+    }
+    state3D.graphData.strikes = Array.from(strikes).sort((a, b) => {
+      const distA = Math.abs(a - state3D.spotPrice);
+      const distB = Math.abs(b - state3D.spotPrice);
+      return distA - distB || a - b;
+    });
+
+    // Calculate gamma for 3D options data
+    const expDates = Object.fromEntries(state3D.expirationDates.map(exp => [exp, calculateTimeToExpiration(exp)]));
+    for (const symbol in state3D.graphData.optionsData) {
+      const cleanSymbol = symbol.trim();
+      const isCall = cleanSymbol.includes("C");
+      const isPut = cleanSymbol.includes("P");
+      if (!isCall && !isPut) continue;
+
+      const strike = state3D.graphData.optionsData[symbol].strikePrice;
+      if (isNaN(strike)) {
+        console.error(`[3D] Invalid strike for ${cleanSymbol}: ${strike}`);
+        continue;
+      }
+
+      const expDate = state3D.expirationDates.find(exp => exp.replace(/-/g, "") === cleanSymbol.slice(6, 12));
+      const t = expDates[expDate] || 30 / 365;
+
+      const gamma = blackScholesGamma(state3D.spotPrice, strike, t, 0.01, state3D.sigma);
+      state3D.graphData.optionsData[symbol].gamma = gamma;
+    }
+
     updateGraphData3D();
     console.log(`[3D] Sending data with ${optionSymbols.length} options`);
 
-    res.status(200).json(state.graphData3D);
+    res.status(200).json(state3D.graphData);
   } catch (e) {
     console.error("[3D] Error in /market-data-3d:", e);
     res.status(500).json({ error: e.message });

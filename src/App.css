@@ -207,3 +207,12 @@ button:disabled {
   border-radius: 12px;
   box-shadow: 0 0 15px rgba(0, 247, 255, 0.1);
 }
+
+.canvas-chart {
+  display: block;
+  background: transparent;
+}
+
+.tooltip {
+  z-index: 10;
+}
